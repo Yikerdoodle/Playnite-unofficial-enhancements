@@ -1,0 +1,5 @@
+# build output and local state - never committed
+*.exe
+*.log
+*.bak-*
+settings.json

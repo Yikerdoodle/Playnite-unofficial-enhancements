@@ -1,0 +1,40 @@
+# Sunshine configuration - GAMING profile (Moonlight client -> TV), 1080p60 HEVC with HDR available.
+# Applied by Apply-Gaming-Mode.ps1, which fills in {{OUTPUT_NAME}} for this machine.
+# Needs an NVIDIA GPU with NVENC (Turing or newer for 10-bit HEVC / HDR).
+
+# Hardware NVENC.
+encoder = nvenc
+
+# P3 = fast encode, small quality cost. Try 2 for even less encode delay, 4 for slightly better quality.
+nvenc_preset = 3
+
+# A second analysis pass adds delay on every frame - off for gaming.
+nvenc_twopass = disabled
+
+# Costs GPU time the game needs - off for gaming.
+nvenc_spatial_aq = disabled
+
+# 3 = advertise HEVC Main + Main10 (HDR). Needs NVENC (software x265 cannot do 10-bit).
+# Use 2 for SDR-only HEVC.
+hevc_mode = 3
+
+# DirectX Desktop Duplication - the capture method that works with a virtual display.
+capture = ddx
+
+# Default stream bitrate (kbps); the Moonlight slider overrides it.
+bitrate = 50000
+
+# The virtual display to stream ("VDD by MTT", Virtual Display Driver by MikeTheTech).
+# This is Sunshine's own device_id, detected from its log by Apply-Gaming-Mode.ps1.
+{{OUTPUT_NAME_LINE}}
+
+# While streaming, make that display the PRIMARY one (restored when the stream ends), so
+# Playnite Fullscreen and games open on the streamed screen instead of the physical panel.
+dd_configuration_option = ensure_primary
+
+# Force 1080p60. (Moonlight must have "Optimize game settings" turned on for the resolution
+# change to be applied.)
+dd_resolution_option = manual
+dd_manual_resolution = 1920x1080
+dd_refresh_rate_option = manual
+dd_manual_refresh_rate = 60
