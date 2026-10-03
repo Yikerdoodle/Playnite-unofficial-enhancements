@@ -29,6 +29,7 @@ using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
@@ -63,6 +64,7 @@ static class Program
 {
     delegate bool EnumProc(IntPtr h, IntPtr l);
     [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc p, IntPtr l);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
     [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
@@ -190,6 +192,58 @@ static class Program
         Application.ExitThread();
     }
 
+    // A window that needs the USER (e.g. Steam's controller warning, a cloud-save conflict question). These
+    // are titled "Steam Dialog" (process steam / steamwebhelper). Steam's own "Launching..." progress window
+    // is deliberately NOT in this list: that one is hidden, these must never be.
+    static readonly string[] AttentionTitles = { "Steam Dialog" };
+
+    static IntPtr FindAttentionWindow(Rectangle screen)
+    {
+        double screenArea = (double)screen.Width * screen.Height;
+        IntPtr found = IntPtr.Zero;
+        EnumWindows(delegate(IntPtr h, IntPtr l)
+        {
+            if (!IsWindowVisible(h) || IsIconic(h)) return true;
+            if (Area(h) / screenArea < 0.05) return true;
+            StringBuilder t = new StringBuilder(128); GetWindowText(h, t, 128);
+            if (Array.IndexOf(AttentionTitles, t.ToString()) < 0) return true;
+            uint wp; GetWindowThreadProcessId(h, out wp);
+            try
+            {
+                string n = Process.GetProcessById((int)wp).ProcessName.ToLowerInvariant();
+                if (n == "steam" || n == "steamwebhelper") { found = h; return false; }
+            }
+            catch { }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    // diagnostics: the visible Steam windows (title, size), at most every 2 s, so the real titles can be checked in the log
+    static DateTime nextSteamLog = DateTime.MinValue;
+    static void LogSteamWindows(DateTime now)
+    {
+        if (now < nextSteamLog) return;
+        nextSteamLog = now.AddSeconds(2);
+        System.Collections.Generic.List<string> parts = new System.Collections.Generic.List<string>();
+        EnumWindows(delegate(IntPtr h, IntPtr l)
+        {
+            if (!IsWindowVisible(h)) return true;
+            uint wp; GetWindowThreadProcessId(h, out wp);
+            try
+            {
+                string n = Process.GetProcessById((int)wp).ProcessName.ToLowerInvariant();
+                if (n != "steam" && n != "steamwebhelper") return true;
+            }
+            catch { return true; }
+            StringBuilder t = new StringBuilder(128); GetWindowText(h, t, 128);
+            RECT r; GetWindowRect(h, out r);
+            parts.Add("'" + t + "' " + (r.R - r.L) + "x" + (r.B - r.T));
+            return true;
+        }, IntPtr.Zero);
+        if (parts.Count > 0) Log("steam windows: " + string.Join("; ", parts.ToArray()));
+    }
+
     // A big Steam window (e.g. the "Synchronizing cloud" screen shown after a game quits).
     static bool SteamWindowUp(Rectangle screen)
     {
@@ -255,11 +309,14 @@ static class Program
         bool backLogged = false;
         bool tempOpaque = false;                                   // cover turned opaque because the game window vanished
         DateTime steamClearSince = DateTime.MinValue;
+        bool attentionActive = false;                              // a Steam dialog that needs the user is on screen
+        DateTime nextRaise = DateTime.MinValue, prevNow = DateTime.Now;
         t.Tick += delegate
         {
           try
           {
             DateTime now = DateTime.Now;
+            double dt = (now - prevNow).TotalSeconds; prevNow = now;
             string s = "";
             try { s = File.ReadAllText(stateFile); } catch { }
             bool stopSignal = s.Contains("stop");
@@ -270,8 +327,30 @@ static class Program
                 double el = (now - start).TotalSeconds;
                 Match m = Regex.Match(s, @"pid=(\d+)");
                 if (m.Success) int.TryParse(m.Groups[1].Value, out pid);
+                LogSteamWindows(now);
+
+                // A Steam dialog that needs the user (controller warning, save-conflict question...) must
+                // never be hidden: unpin Playnite, drop any cover, put the dialog on top, and pause the
+                // fail-safe clock while it is up. Normal behaviour resumes once it is gone.
+                IntPtr att = stopSignal ? IntPtr.Zero : FindAttentionWindow(bounds);
+                if (att != IntPtr.Zero && el < max)
+                {
+                    if (!attentionActive) { attentionActive = true; Log("Steam dialog on screen -> letting it through (Playnite unpinned, cover removed)"); }
+                    if (pin != IntPtr.Zero && IsWindow(pin)) SetWindowPos(pin, HWND_NOTOPMOST, 0, 0, 0, 0, FLAGS);
+                    CloseCover();
+                    SetWindowPos(att, HWND_TOPMOST, 0, 0, 0, 0, FLAGS);
+                    if (now >= nextRaise) { SetForegroundWindow(att); nextRaise = now.AddSeconds(5); }   // not every tick: never fight the user
+                    start = start.AddSeconds(dt);
+                    return;
+                }
+                if (attentionActive) { attentionActive = false; Log("Steam dialog gone -> back to normal"); }
 
                 if (pin == IntPtr.Zero) { pin = FindPlaynite(); if (pin != IntPtr.Zero) Log("found Playnite window"); }
+                if (pin != IntPtr.Zero && !IsWindow(pin))
+                {
+                    // Playnite itself was closed while we were waiting: nothing to protect, never leave a black cover up
+                    CloseCover(); Quit("Playnite window closed while waiting for the game"); return;
+                }
                 bool pinOk = pin != IntPtr.Zero && IsWindow(pin) && IsWindowVisible(pin) && !IsIconic(pin);
                 if (pinOk) SetWindowPos(pin, HWND_TOPMOST, 0, 0, 0, 0, FLAGS);
                 else if (pin != IntPtr.Zero)
@@ -444,6 +523,23 @@ static class Program
             if (phase == Phase.Restore)
             {
                 if (!IsWindow(pin)) { CloseCover(); Quit("Playnite window closed during restore"); return; }
+
+                // Same rule as while waiting for the game: a Steam dialog that needs the user (e.g. a
+                // cloud-save question after the game quits) is never hidden under Playnite or the cover.
+                IntPtr att2 = FindAttentionWindow(bounds);
+                if (att2 != IntPtr.Zero)
+                {
+                    if (!attentionActive) { attentionActive = true; Log("Steam dialog on screen during restore -> letting it through"); }
+                    SetWindowPos(pin, HWND_NOTOPMOST, 0, 0, 0, 0, FLAGS);
+                    CloseCover();
+                    SetWindowPos(att2, HWND_TOPMOST, 0, 0, 0, 0, FLAGS);
+                    if (now >= nextRaise) { SetForegroundWindow(att2); nextRaise = now.AddSeconds(5); }
+                    phaseStart = phaseStart.AddSeconds(dt);   // do not let the dialog use up the 15 s fail-safe
+                    okSince = DateTime.MinValue; steamClearSince = DateTime.MinValue;
+                    return;
+                }
+                if (attentionActive) { attentionActive = false; Log("Steam dialog gone during restore -> back to normal"); }
+
                 if (IsIconic(pin)) ShowWindow(pin, SW_RESTORE);
                 bool back = !IsIconic(pin) && IsWindowVisible(pin) && Area(pin) / screenArea >= 0.90;
 

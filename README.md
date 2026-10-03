@@ -91,6 +91,17 @@ canvas, not stretched).
   shared folders (Public Desktop, all-users Start menu) may need an elevated PowerShell; the script tells
   you which ones. `-Restore` puts the default icon back.
 
+### Dialogs that need you are never hidden
+
+While the helper keeps Playnite on top during a launch (and again while it restores Playnite after a game),
+it recognizes windows that need *you* - Steam's controller warning, a cloud-save question - by their title,
+`Steam Dialog` (process `steam` / `steamwebhelper`). Those are let through: Playnite is un-pinned, any black
+cover is removed, the dialog is raised to the top, and the helper's fail-safe timer is paused while it is up.
+Normal behaviour resumes once the dialog is gone. Steam's own "Launching..." progress window is a different
+window and is still hidden. It deliberately does **not** click "OK" for you: the same kind of window can ask
+real questions, and a blind click could pick the wrong answer. The helper also exits at once if Playnite
+itself is closed while waiting, so a cover can never linger. The log (`%TEMP%\playnite-cover.log`) lists the
+visible Steam windows every two seconds, to make it easy to check these titles on your Steam version.
 ## Rename Playnite in the taskbar
 
 Windows labels a running program's taskbar button (and its Alt-Tab entry) with the **window title**, which
