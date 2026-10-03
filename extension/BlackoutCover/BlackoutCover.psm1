@@ -39,12 +39,13 @@ function Get-CoverPaths {
 }
 
 function Get-CoverSettings {
-    $s = @{ QuitSteamAfterGame = $true }
+    $s = @{ QuitSteamAfterGame = $true; WindowTitle = '' }
     try {
         $p = Get-CoverPaths
         if (Test-Path -LiteralPath $p.Settings) {
             $j = Get-Content -LiteralPath $p.Settings -Raw | ConvertFrom-Json
             if ($null -ne $j.QuitSteamAfterGame) { $s.QuitSteamAfterGame = [bool]$j.QuitSteamAfterGame }
+            if ($j.WindowTitle) { $s.WindowTitle = [string]$j.WindowTitle }
         }
     } catch { Write-CoverLog "BlackoutCover: could not read settings.json: $($_.Exception.Message)" -IsError }
     return $s
@@ -70,15 +71,21 @@ function Stop-SteamClient {
 
 function OnApplicationStarted {
     param($evnArgs)
-    # Custom taskbar / Alt-Tab icon: start the tiny watcher that stamps pc-games.ico onto Playnite's
-    # windows (only if both the icon and the watcher are installed). One instance only; it exits on its own.
+    # Custom taskbar / Alt-Tab icon and window title: start the tiny watcher that stamps pc-games.ico and the
+    # configured WindowTitle (settings.json) onto Playnite's windows. Needs the watcher plus an icon and/or a
+    # title. One instance only; it exits on its own after Playnite closes.
     try {
         $p = Get-CoverPaths
         $icon = Join-Path $p.Dir 'pc-games.ico'
         $watcher = Join-Path $p.Dir 'PlayniteIcon.exe'
-        if ((Test-Path -LiteralPath $icon) -and (Test-Path -LiteralPath $watcher)) {
-            Start-Process -FilePath $watcher -ArgumentList ('"' + $icon + '"') -WindowStyle Hidden
-            Write-CoverLog 'BlackoutCover: started the window-icon watcher.'
+        $title = (Get-CoverSettings).WindowTitle
+        $haveIcon = Test-Path -LiteralPath $icon
+        if ((Test-Path -LiteralPath $watcher) -and ($haveIcon -or $title)) {
+            $iconArg = if ($haveIcon) { $icon } else { '-' }
+            $argList = @(('"' + $iconArg + '"'))
+            if ($title) { $argList += ('"' + $title + '"') }
+            Start-Process -FilePath $watcher -ArgumentList $argList -WindowStyle Hidden
+            Write-CoverLog 'BlackoutCover: started the window icon/title watcher.'
         }
     } catch { Write-CoverLog "BlackoutCover OnApplicationStarted: $($_.Exception.Message)" -IsError }
 }

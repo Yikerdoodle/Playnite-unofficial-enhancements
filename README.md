@@ -91,6 +91,13 @@ canvas, not stretched).
   shared folders (Public Desktop, all-users Start menu) may need an elevated PowerShell; the script tells
   you which ones. `-Restore` puts the default icon back.
 
+## Rename Playnite in the taskbar
+
+Windows labels a running program's taskbar button (and its Alt-Tab entry) with the **window title**, which
+Playnite sets to "Playnite". `.\install.ps1 -WindowTitle Games` (or `{ "WindowTitle": "Games" }` in
+`settings.json`) makes the same background watcher rename Playnite's windows. Only windows titled exactly
+"Playnite" are renamed, so dialogs keep their own titles.
+
 ## Remove the logo from the Fullscreen main menu
 
 `.\extras\theme\Remove-MainMenuLogo.ps1` empties the header of Fullscreen mode's main menu (normally the
@@ -98,6 +105,24 @@ Playnite logo) in the **active, installed Fullscreen theme**, so the layout clos
 It edits only that theme's local `Views\MainMenu.xaml` (keeping `MainMenu.xaml.orig`); no theme files are copied
 into this repository. Re-run it after the theme author updates the theme. `-Restore` undoes it. The built-in
 Default theme is part of Playnite's install and is not touched.
+
+## Line the Fullscreen header up with the game tiles
+
+With the logo gone, the home screen's header items ("All", "Favorites", "Most Played"...) can look off-centre
+because a fixed spacer column pushes them right. `.\extras\theme\Align-FullscreenHeader.ps1` narrows that
+spacer by `-ShiftLeft` units (default 66, measured for the "Reskin XBOXSX Ext" theme at 1920x1080: header
+text from x=120 to x=54, level with the left edge of the game tiles). Other themes may need another value.
+`-Restore` undoes it.
+
+## Remove the logo from Desktop mode
+
+`.\extras\theme\Remove-DesktopLogo.ps1` does the same for Desktop mode. There the logo *is* the main-menu
+button (`PART_ElemMainMenu` in `Sidebar.xaml` / `TopPanel.xaml`), so the script hides that element. Playnite's
+built-in Default theme lives in the install folder and must not be edited, so the script makes a **copy** of it
+called "Default (no logo)" in your data folder (made on your machine from your own install - nothing from
+Playnite's theme is stored in this repo), hides the logo there, and selects it in `config.json` (backup kept).
+Playnite must be closed. The main menu is then reached from Playnite's tray icon. `-Restore` selects the
+built-in theme again.
 
 ## Optional extras (for streaming to a TV)
 

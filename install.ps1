@@ -29,6 +29,10 @@
   extension folder, and a tiny watcher (PlayniteIcon.exe) applies it to Playnite's windows while it runs.
   To also change the *shortcut* icons (desktop, Start menu, pins), run extras\windows\Set-ShortcutIcons.ps1.
 
+.PARAMETER WindowTitle
+  Optional. Rename Playnite's windows (the taskbar label and Alt-Tab name) from "Playnite" to this text,
+  e.g. -WindowTitle Games. Stored in settings.json; applied by the same background watcher.
+
 .PARAMETER AllowRunning
   Skip the "Playnite is closed" check. Only for testing the installer against a COPY of a data
   folder (-DataDir); never use it against your real, running Playnite.
@@ -42,6 +46,7 @@ param(
     [switch]$NoQuitSteam,
     [switch]$SkipFullscreenConfig,
     [string]$IconPng,
+    [string]$WindowTitle,
     [switch]$AllowRunning
 )
 $ErrorActionPreference = 'Stop'
@@ -87,9 +92,16 @@ try {
     Get-ChildItem $target -File | Unblock-File -ErrorAction SilentlyContinue
     Write-Host "Installed extension to $target"
 
-    if ($NoQuitSteam) {
-        '{ "QuitSteamAfterGame": false }' | Set-Content -LiteralPath (Join-Path $target 'settings.json') -Encoding UTF8
-        Write-Host "Steam will NOT be quit after games (settings.json written)."
+    if ($NoQuitSteam -or $WindowTitle) {
+        # merge into any existing settings.json so earlier choices are kept
+        $sf = Join-Path $target 'settings.json'
+        $obj = [ordered]@{}
+        if (Test-Path -LiteralPath $sf) { try { (Get-Content -LiteralPath $sf -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $obj[$_.Name] = $_.Value } } catch { } }
+        if ($NoQuitSteam) { $obj['QuitSteamAfterGame'] = $false }
+        if ($WindowTitle) { $obj['WindowTitle'] = $WindowTitle }
+        ($obj | ConvertTo-Json) | Set-Content -LiteralPath $sf -Encoding UTF8
+        if ($NoQuitSteam) { Write-Host "Steam will NOT be quit after games (settings.json written)." }
+        if ($WindowTitle) { Write-Host "Playnite's windows will be titled '$WindowTitle' (settings.json written)." }
     }
 }
 finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }

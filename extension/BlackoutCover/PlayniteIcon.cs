@@ -1,18 +1,22 @@
-// Window-icon watcher for Playnite.
+// Window icon / title watcher for Playnite.
 //
-// Usage: PlayniteIcon.exe <path-to-icon.ico>
+// Usage: PlayniteIcon.exe <path-to-icon.ico | -> [window title]
 //
-// Windows takes a RUNNING program's taskbar / Alt-Tab icon from the window itself, not from any
-// shortcut, so a custom icon has to be set on Playnite's windows while it runs. This tiny background
-// process does that: every 1.5 s it makes sure each top-level window of Playnite.DesktopApp /
-// Playnite.FullscreenApp carries the given icon (WM_SETICON), and exits once Playnite has been gone for
-// a minute. One instance only. The icon handles belong to this process, so it must stay alive for the
-// icon to stay - which is why it keeps running while Playnite does.
+// Windows takes a RUNNING program's taskbar / Alt-Tab icon AND its taskbar label from the window itself
+// (its icon and its title), not from any shortcut, so both have to be set on Playnite's windows while it
+// runs. This tiny background process does that: every 1.5 s it makes sure each top-level window of
+// Playnite.DesktopApp / Playnite.FullscreenApp
+//   * carries the given icon (WM_SETICON), if an icon file is given, and
+//   * is titled the given title instead of "Playnite" (only windows titled exactly "Playnite" are
+//     renamed, so dialogs and other windows keep their own titles), if a title is given.
+// It exits once Playnite has been gone for a minute. One instance only. The icon handles belong to this
+// process, so it must stay alive for the icon to stay - which is why it keeps running while Playnite does.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 
 static class PlayniteIcon
@@ -22,9 +26,14 @@ static class PlayniteIcon
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll", SetLastError = true)]
     static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr w, string l, uint flags, uint timeout, out IntPtr result);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern int GetWindowText(IntPtr h, StringBuilder text, int max);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     static extern IntPtr LoadImage(IntPtr hInst, string name, uint type, int cx, int cy, uint flags);
 
+    const uint WM_SETTEXT = 0x000C;
     const uint WM_SETICON = 0x0080, WM_GETICON = 0x007F;
     const int ICON_SMALL = 0, ICON_BIG = 1;
     const uint SMTO_ABORTIFHUNG = 0x0002;
@@ -40,14 +49,22 @@ static class PlayniteIcon
     [STAThread]
     static int Main(string[] a)
     {
-        if (a.Length < 1 || !File.Exists(a[0])) return 2;
+        string iconPath = a.Length >= 1 ? a[0] : "";
+        string title = a.Length >= 2 ? a[1] : "";
+        bool haveIcon = iconPath.Length > 0 && File.Exists(iconPath);
+        bool haveTitle = title.Length > 0;
+        if (!haveIcon && !haveTitle) return 2;
         bool createdNew;
         Mutex mutex = new Mutex(true, "PlayniteIcon-watcher", out createdNew);
         if (!createdNew) return 0;
 
-        IntPtr big = LoadImage(IntPtr.Zero, a[0], IMAGE_ICON, 64, 64, LR_LOADFROMFILE);
-        IntPtr small = LoadImage(IntPtr.Zero, a[0], IMAGE_ICON, 32, 32, LR_LOADFROMFILE);
-        if (big == IntPtr.Zero || small == IntPtr.Zero) return 3;
+        IntPtr big = IntPtr.Zero, small = IntPtr.Zero;
+        if (haveIcon)
+        {
+            big = LoadImage(IntPtr.Zero, iconPath, IMAGE_ICON, 64, 64, LR_LOADFROMFILE);
+            small = LoadImage(IntPtr.Zero, iconPath, IMAGE_ICON, 32, 32, LR_LOADFROMFILE);
+            if (big == IntPtr.Zero || small == IntPtr.Zero) { haveIcon = false; if (!haveTitle) return 3; }
+        }
 
         DateTime lastSeen = DateTime.Now;
         while (true)
@@ -67,10 +84,20 @@ static class PlayniteIcon
                 {
                     uint wp; GetWindowThreadProcessId(h, out wp);
                     if (!pids.Contains(wp)) return true;
-                    if (Send(h, WM_GETICON, ICON_BIG, IntPtr.Zero) != big)
+                    if (haveIcon && Send(h, WM_GETICON, ICON_BIG, IntPtr.Zero) != big)
                     {
                         Send(h, WM_SETICON, ICON_BIG, big);
                         Send(h, WM_SETICON, ICON_SMALL, small);
+                    }
+                    if (haveTitle)
+                    {
+                        StringBuilder sb = new StringBuilder(256);
+                        GetWindowText(h, sb, 256);
+                        if (sb.ToString() == "Playnite")
+                        {
+                            IntPtr res;
+                            SendMessageTimeout(h, WM_SETTEXT, IntPtr.Zero, title, SMTO_ABORTIFHUNG, 500, out res);
+                        }
                     }
                     return true;
                 }, IntPtr.Zero);
