@@ -39,13 +39,14 @@ function Get-CoverPaths {
 }
 
 function Get-CoverSettings {
-    $s = @{ QuitSteamAfterGame = $true; WindowTitle = '' }
+    $s = @{ QuitSteamAfterGame = $true; WindowTitle = ''; HideSplashScreen = $false }
     try {
         $p = Get-CoverPaths
         if (Test-Path -LiteralPath $p.Settings) {
             $j = Get-Content -LiteralPath $p.Settings -Raw | ConvertFrom-Json
             if ($null -ne $j.QuitSteamAfterGame) { $s.QuitSteamAfterGame = [bool]$j.QuitSteamAfterGame }
             if ($j.WindowTitle) { $s.WindowTitle = [string]$j.WindowTitle }
+            if ($null -ne $j.HideSplashScreen) { $s.HideSplashScreen = [bool]$j.HideSplashScreen }
         }
     } catch { Write-CoverLog "BlackoutCover: could not read settings.json: $($_.Exception.Message)" -IsError }
     return $s
@@ -78,12 +79,14 @@ function OnApplicationStarted {
         $p = Get-CoverPaths
         $icon = Join-Path $p.Dir 'pc-games.ico'
         $watcher = Join-Path $p.Dir 'PlayniteIcon.exe'
-        $title = (Get-CoverSettings).WindowTitle
+        $cfg = Get-CoverSettings
+        $title = $cfg.WindowTitle
         $haveIcon = Test-Path -LiteralPath $icon
-        if ((Test-Path -LiteralPath $watcher) -and ($haveIcon -or $title)) {
+        if ((Test-Path -LiteralPath $watcher) -and ($haveIcon -or $title -or $cfg.HideSplashScreen)) {
             $iconArg = if ($haveIcon) { $icon } else { '-' }
             $argList = @(('"' + $iconArg + '"'))
             if ($title) { $argList += ('"' + $title + '"') }
+            if ($cfg.HideSplashScreen) { $argList += '--hide-splash' }
             Start-Process -FilePath $watcher -ArgumentList $argList -WindowStyle Hidden
             Write-CoverLog 'BlackoutCover: started the window icon/title watcher.'
         }

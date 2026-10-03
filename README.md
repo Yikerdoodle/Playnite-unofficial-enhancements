@@ -112,6 +112,21 @@ Prefer not to have a resident process? `.\install.ps1 -NoRunAtLogon` skips the R
 starts the watcher when Playnite starts, which can show Playnite's own icon/title for a fraction of a second.
 `uninstall.ps1` removes the Run entry. Timestamps of what the watcher did are in `%TEMP%\playnite-icon.log`.
 
+## Hide Playnite's splash screen
+
+Two layers, because Playnite can start in several ways:
+
+- **`.\install.ps1 -HideSplash`** - the always-running watcher hides Playnite's splash *window* the instant it
+  appears (it matches the window class, `SplashScreen` by default, and logs the class of every new Playnite
+  window to `%TEMP%\playnite-icon.log` so this can be checked or changed with `--splash-class=`). This covers
+  **every** start, including the relaunch Playnite does itself when you switch between Desktop and Fullscreen
+  mode, where no command-line switch can be added.
+- **`.\extras\windows\Hide-PlayniteSplash.ps1`** - adds Playnite's own documented `--hidesplashscreen` switch
+  ("won't show startup splash screen") to every Playnite shortcut (desktop, Start menu, taskbar pins) and, with
+  `-Sunshine`, to Sunshine app entries that launch Playnite (administrator rights; Sunshine reads `apps.json` at
+  startup, so the change applies the next time it starts; `-RestartSunshine` restarts it only if it is already
+  running and no client is connected). `-Restore` removes the switch again.
+
 ## Remove the logo from the Fullscreen main menu
 
 `.\extras\theme\Remove-MainMenuLogo.ps1` empties the header of Fullscreen mode's main menu (normally the

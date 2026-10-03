@@ -33,6 +33,12 @@
   Optional. Rename Playnite's windows (the taskbar label and Alt-Tab name) from "Playnite" to this text,
   e.g. -WindowTitle Games. Stored in settings.json; applied by the same background watcher.
 
+.PARAMETER HideSplash
+  Hide Playnite's startup splash screen. The watcher hides the splash window the instant it appears, for
+  EVERY way Playnite can start (including the relaunch when switching Desktop <-> Fullscreen mode).
+  For launches you control you can also add Playnite's own --hidesplashscreen switch to shortcuts and
+  Sunshine: see extras\windows\Hide-PlayniteSplash.ps1.
+
 .PARAMETER NoRunAtLogon
   By default, when a custom icon and/or window title is configured, the tiny watcher (PlayniteIcon.exe) is
   registered to start at logon (HKCU Run key) and started right away, so Playnite's window is fixed the
@@ -53,6 +59,7 @@ param(
     [switch]$SkipFullscreenConfig,
     [string]$IconPng,
     [string]$WindowTitle,
+    [switch]$HideSplash,
     [switch]$NoRunAtLogon,
     [switch]$AllowRunning
 )
@@ -99,16 +106,18 @@ try {
     Get-ChildItem $target -File | Unblock-File -ErrorAction SilentlyContinue
     Write-Host "Installed extension to $target"
 
-    if ($NoQuitSteam -or $WindowTitle) {
+    if ($NoQuitSteam -or $WindowTitle -or $HideSplash) {
         # merge into any existing settings.json so earlier choices are kept
         $sf = Join-Path $target 'settings.json'
         $obj = [ordered]@{}
         if (Test-Path -LiteralPath $sf) { try { (Get-Content -LiteralPath $sf -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $obj[$_.Name] = $_.Value } } catch { } }
         if ($NoQuitSteam) { $obj['QuitSteamAfterGame'] = $false }
         if ($WindowTitle) { $obj['WindowTitle'] = $WindowTitle }
+        if ($HideSplash) { $obj['HideSplashScreen'] = $true }
         ($obj | ConvertTo-Json) | Set-Content -LiteralPath $sf -Encoding UTF8
         if ($NoQuitSteam) { Write-Host "Steam will NOT be quit after games (settings.json written)." }
         if ($WindowTitle) { Write-Host "Playnite's windows will be titled '$WindowTitle' (settings.json written)." }
+        if ($HideSplash) { Write-Host "Playnite's startup splash screen will be hidden (settings.json written)." }
     }
 
     # --- icon / title watcher: start at logon (and now) so Playnite's own icon/title never flash ---------------
@@ -120,10 +129,16 @@ try {
             if (Test-Path -LiteralPath $sf) { try { $titleVal = [string](Get-Content -LiteralPath $sf -Raw | ConvertFrom-Json).WindowTitle } catch { } }
         }
         $haveIco = Test-Path -LiteralPath $icoFile
-        if ($haveIco -or $titleVal) {
+        $hideVal = [bool]$HideSplash
+        if (-not $hideVal) {
+            $sf = Join-Path $target 'settings.json'
+            if (Test-Path -LiteralPath $sf) { try { $hideVal = [bool](Get-Content -LiteralPath $sf -Raw | ConvertFrom-Json).HideSplashScreen } catch { } }
+        }
+        if ($haveIco -or $titleVal -or $hideVal) {
             $watcherExe = Join-Path $target 'PlayniteIcon.exe'
             $argList = @(('"' + $(if ($haveIco) { $icoFile } else { '-' }) + '"'))
             if ($titleVal) { $argList += ('"' + $titleVal + '"') }
+            if ($hideVal) { $argList += '--hide-splash' }
             $argList += '--resident'
             Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'PlayniteIconWatcher' -Value ('"' + $watcherExe + '" ' + ($argList -join ' '))
             Start-Process -FilePath $watcherExe -ArgumentList $argList -WindowStyle Hidden

@@ -1,6 +1,7 @@
 // Window icon / title watcher for Playnite.
 //
-// Usage: PlayniteIcon.exe <path-to-icon.ico | -> [window title] [--resident] [--names=A,B] [--match=Text]
+// Usage: PlayniteIcon.exe <path-to-icon.ico | -> [window title] [--resident] [--hide-splash]
+//                         [--splash-class=A,B] [--names=A,B] [--match=Text]
 //
 // Windows takes a RUNNING program's taskbar / Alt-Tab icon AND its taskbar label from the window itself
 // (its icon and its title), not from any shortcut, so both have to be set on Playnite's windows. This tiny
@@ -15,6 +16,11 @@
 // poll remains as a safety net. Run it BEFORE Playnite starts (e.g. at logon with --resident) so even the
 // first window is fixed before it appears.
 //
+//   --hide-splash  also hide Playnite's startup splash window the instant it appears (covers every way
+//                  Playnite can start, including the relaunch when switching Desktop <-> Fullscreen mode,
+//                  where the --hidesplashscreen command-line switch cannot be passed)
+//   --splash-class=A,B  window class name(s) that identify the splash (default SplashScreen); every new
+//                  Playnite top-level window's class is logged so this can be checked/adjusted
 //   --resident     keep running forever (otherwise it exits once Playnite has been gone for a minute)
 //   --names=A,B    process names to watch (default Playnite.DesktopApp,Playnite.FullscreenApp)
 //   --match=Text   the title text to replace (default "Playnite")
@@ -45,6 +51,12 @@ static class PlayniteIcon
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     static extern int GetWindowText(IntPtr h, StringBuilder text, int max);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern int GetClassName(IntPtr h, StringBuilder text, int max);
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [StructLayout(LayoutKind.Sequential)] struct RECT { public int L, T, R, B; }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     static extern IntPtr LoadImage(IntPtr hInst, string name, uint type, int cx, int cy, uint flags);
     [DllImport("user32.dll")]
     static extern IntPtr SetWinEventHook(uint min, uint max, IntPtr hmod, WinEventProc proc, uint pid, uint tid, uint flags);
@@ -57,7 +69,9 @@ static class PlayniteIcon
     const uint EVENT_OBJECT_CREATE = 0x8000, EVENT_OBJECT_SHOW = 0x8002, EVENT_OBJECT_NAMECHANGE = 0x800C;
     const uint WINEVENT_OUTOFCONTEXT = 0;
 
-    static bool haveIcon, haveTitle, resident;
+    static bool haveIcon, haveTitle, resident, hideSplash;
+    static HashSet<string> splashClasses = new HashSet<string>(new string[] { "splashscreen" });
+    static HashSet<IntPtr> seenWindows = new HashSet<IntPtr>();
     static IntPtr big = IntPtr.Zero, small = IntPtr.Zero;
     static string title = "", match = "Playnite";
     static HashSet<string> names = new HashSet<string>(new string[] { "playnite.desktopapp", "playnite.fullscreenapp" });
@@ -96,6 +110,29 @@ static class PlayniteIcon
     {
         bool changed = false;
         string before = "";
+
+        // Diagnostics: log each new Playnite top-level window once (class, size, visibility, title) so the
+        // splash window's class can be confirmed from the log.
+        // The splash (if requested) is hidden right here, before anything else.
+        if (hideSplash || !seenWindows.Contains(h))
+        {
+            StringBuilder cn = new StringBuilder(128);
+            GetClassName(h, cn, 128);
+            string cls = cn.ToString();
+            if (hideSplash && splashClasses.Contains(cls.ToLowerInvariant()) && IsWindowVisible(h))
+            {
+                ShowWindow(h, 0);   // SW_HIDE
+                Log("HID splash window " + h + " (class '" + cls + "', " + why + ")");
+                return true;
+            }
+            if (seenWindows.Add(h))
+            {
+                RECT rc; GetWindowRect(h, out rc);
+                StringBuilder tt = new StringBuilder(256); GetWindowText(h, tt, 256);
+                Log("new window " + h + ": class='" + cls + "' size=" + (rc.R - rc.L) + "x" + (rc.B - rc.T) +
+                    " visible=" + IsWindowVisible(h) + " title='" + tt + "' (" + why + ")");
+            }
+        }
         if (haveTitle || logLines < 60)
         {
             StringBuilder sb = new StringBuilder(256);
@@ -159,6 +196,8 @@ static class PlayniteIcon
         foreach (string s in a)
         {
             if (s == "--resident") resident = true;
+            else if (s == "--hide-splash") hideSplash = true;
+            else if (s.StartsWith("--splash-class=")) splashClasses = new HashSet<string>(s.Substring(15).ToLowerInvariant().Split(','));
             else if (s.StartsWith("--names=")) { names = new HashSet<string>(s.Substring(8).ToLowerInvariant().Split(',')); }
             else if (s.StartsWith("--match=")) match = s.Substring(8);
             else pos.Add(s);
@@ -167,13 +206,13 @@ static class PlayniteIcon
         if (pos.Count >= 2) title = pos[1];
         haveIcon = iconPath.Length > 0 && File.Exists(iconPath);
         haveTitle = title.Length > 0;
-        if (!haveIcon && !haveTitle) return 2;
+        if (!haveIcon && !haveTitle && !hideSplash) return 2;
 
         bool createdNew;
         Mutex mutex = new Mutex(true, "PlayniteIcon-watcher", out createdNew);
         if (!createdNew) return 0;
         try { File.WriteAllText(logPath, ""); } catch { }
-        Log("watcher started (resident=" + resident + ", icon=" + haveIcon + ", title='" + title + "')");
+        Log("watcher started (resident=" + resident + ", icon=" + haveIcon + ", title='" + title + "', hide-splash=" + hideSplash + ")");
 
         if (haveIcon)
         {
