@@ -68,6 +68,21 @@ function Stop-SteamClient {
     }
 }
 
+function OnApplicationStarted {
+    param($evnArgs)
+    # Custom taskbar / Alt-Tab icon: start the tiny watcher that stamps pc-games.ico onto Playnite's
+    # windows (only if both the icon and the watcher are installed). One instance only; it exits on its own.
+    try {
+        $p = Get-CoverPaths
+        $icon = Join-Path $p.Dir 'pc-games.ico'
+        $watcher = Join-Path $p.Dir 'PlayniteIcon.exe'
+        if ((Test-Path -LiteralPath $icon) -and (Test-Path -LiteralPath $watcher)) {
+            Start-Process -FilePath $watcher -ArgumentList ('"' + $icon + '"') -WindowStyle Hidden
+            Write-CoverLog 'BlackoutCover: started the window-icon watcher.'
+        }
+    } catch { Write-CoverLog "BlackoutCover OnApplicationStarted: $($_.Exception.Message)" -IsError }
+}
+
 function OnGameStarting {
     param($evnArgs)
     try {

@@ -24,6 +24,11 @@
   Leave Playnite's fullscreenConfig.json alone (you must then turn off
   "Minimize Playnite after game startup" in Playnite's Fullscreen settings yourself).
 
+.PARAMETER IconPng
+  Optional. A PNG to use as Playnite's taskbar / Alt-Tab icon. It is converted to pc-games.ico in the
+  extension folder, and a tiny watcher (PlayniteIcon.exe) applies it to Playnite's windows while it runs.
+  To also change the *shortcut* icons (desktop, Start menu, pins), run extras\windows\Set-ShortcutIcons.ps1.
+
 .PARAMETER AllowRunning
   Skip the "Playnite is closed" check. Only for testing the installer against a COPY of a data
   folder (-DataDir); never use it against your real, running Playnite.
@@ -36,6 +41,7 @@ param(
     [string]$DataDir = (Join-Path $env:APPDATA 'Playnite'),
     [switch]$NoQuitSteam,
     [switch]$SkipFullscreenConfig,
+    [string]$IconPng,
     [switch]$AllowRunning
 )
 $ErrorActionPreference = 'Stop'
@@ -62,13 +68,22 @@ try {
     $exeTmp = Join-Path $tmp 'PlayniteCover.exe'
     & $csc /nologo /target:winexe "/out:$exeTmp" /r:System.Windows.Forms.dll /r:System.Drawing.dll (Join-Path $srcDir 'PlayniteCover.cs')
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exeTmp)) { Fail "Compiling PlayniteCover.cs failed (csc exit code $LASTEXITCODE)." }
+    $iconExeTmp = Join-Path $tmp 'PlayniteIcon.exe'
+    & $csc /nologo /target:winexe "/out:$iconExeTmp" (Join-Path $srcDir 'PlayniteIcon.cs')
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $iconExeTmp)) { Fail "Compiling PlayniteIcon.cs failed (csc exit code $LASTEXITCODE)." }
 
     # --- install -----------------------------------------------------------------------------------
     $target = Join-Path $DataDir 'Extensions\BlackoutCover'
     New-Item -ItemType Directory -Force $target | Out-Null
-    Get-Process -Name PlayniteCover -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    Copy-Item (Join-Path $srcDir 'extension.yaml'), (Join-Path $srcDir 'BlackoutCover.psm1'), (Join-Path $srcDir 'PlayniteCover.cs') $target -Force
-    Copy-Item $exeTmp $target -Force
+    Get-Process -Name PlayniteCover, PlayniteIcon -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Copy-Item (Join-Path $srcDir 'extension.yaml'), (Join-Path $srcDir 'BlackoutCover.psm1'), (Join-Path $srcDir 'PlayniteCover.cs'), (Join-Path $srcDir 'PlayniteIcon.cs') $target -Force
+    Copy-Item $exeTmp, $iconExeTmp $target -Force
+
+    if ($IconPng) {
+        . (Join-Path $here 'scripts\ConvertTo-Ico.ps1')
+        New-IcoFromPng -PngPath $IconPng -IcoPath (Join-Path $target 'pc-games.ico')
+        Write-Host "Taskbar icon installed (pc-games.ico). Shortcut icons: run extras\windows\Set-ShortcutIcons.ps1 -IconPng <png>."
+    }
     Get-ChildItem $target -File | Unblock-File -ErrorAction SilentlyContinue
     Write-Host "Installed extension to $target"
 

@@ -44,7 +44,8 @@ startup"* (it keeps a backup of `fullscreenConfig.json`). The helper takes over 
 game's window is really up - that is what removes the desktop flash.
 
 Options: `-DataDir <path>` for a non-default/portable data folder, `-NoQuitSteam` to leave Steam running
-after games, `-SkipFullscreenConfig` to change that Playnite setting yourself.
+after games, `-SkipFullscreenConfig` to change that Playnite setting yourself, `-IconPng <file>` for a custom
+taskbar icon (see below).
 
 To undo: `.\uninstall.ps1` (add `-RestoreConfig` to bring back your old `fullscreenConfig.json`).
 
@@ -74,6 +75,29 @@ Create `settings.json` next to the extension (the installer does this for `-NoQu
 
 Every phase has a fail-safe timeout so nothing can ever stay stuck on screen. A log of each step is written to
 `%TEMP%\playnite-cover.log`; script errors go to Playnite's own `playnite.log` (lines containing `BlackoutCover`).
+
+## Custom icon (shortcuts and taskbar)
+
+Give Playnite any icon you like (for example a "PC Games" tile that matches your Moonlight launcher). The
+image is **not** included in this repository - pass your own PNG (any aspect ratio; it is centered on a square
+canvas, not stretched).
+
+- **Taskbar / Alt-Tab icon of the running window:** `.\install.ps1 -IconPng path\to\icon.png`. Windows takes a
+  running program's taskbar icon from the window itself, so a tiny background process (`PlayniteIcon.exe`,
+  compiled by the installer and started by the extension when Playnite starts) stamps the icon onto
+  Playnite's windows and exits a minute after Playnite does.
+- **Shortcut icons (desktop, Start menu, taskbar pins):** `.\extras\windows\Set-ShortcutIcons.ps1 -IconPng path\to\icon.png`
+  converts the PNG to a multi-size `.ico` and sets it on every shortcut that points at Playnite. Shortcuts in
+  shared folders (Public Desktop, all-users Start menu) may need an elevated PowerShell; the script tells
+  you which ones. `-Restore` puts the default icon back.
+
+## Remove the logo from the Fullscreen main menu
+
+`.\extras\theme\Remove-MainMenuLogo.ps1` empties the header of Fullscreen mode's main menu (normally the
+Playnite logo) in the **active, installed Fullscreen theme**, so the layout closes up as if it was never there.
+It edits only that theme's local `Views\MainMenu.xaml` (keeping `MainMenu.xaml.orig`); no theme files are copied
+into this repository. Re-run it after the theme author updates the theme. `-Restore` undoes it. The built-in
+Default theme is part of Playnite's install and is not touched.
 
 ## Optional extras (for streaming to a TV)
 

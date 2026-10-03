@@ -20,7 +20,7 @@ $ErrorActionPreference = 'Stop'
 if (-not $AllowRunning -and (Get-Process -Name 'Playnite.DesktopApp','Playnite.FullscreenApp' -ErrorAction SilentlyContinue)) {
     Write-Host "ERROR: Playnite is running. Close it completely first." -ForegroundColor Red; exit 1
 }
-Get-Process -Name PlayniteCover -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process -Name PlayniteCover, PlayniteIcon -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
 $target = Join-Path $DataDir 'Extensions\BlackoutCover'
 if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force; Write-Host "Removed $target" }
