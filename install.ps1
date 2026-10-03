@@ -33,6 +33,12 @@
   Optional. Rename Playnite's windows (the taskbar label and Alt-Tab name) from "Playnite" to this text,
   e.g. -WindowTitle Games. Stored in settings.json; applied by the same background watcher.
 
+.PARAMETER NoRunAtLogon
+  By default, when a custom icon and/or window title is configured, the tiny watcher (PlayniteIcon.exe) is
+  registered to start at logon (HKCU Run key) and started right away, so Playnite's window is fixed the
+  instant it is created and its own icon/title never show. Pass this to skip that; the extension then starts
+  the watcher when Playnite starts (which can show Playnite's own icon/title for a moment first).
+
 .PARAMETER AllowRunning
   Skip the "Playnite is closed" check. Only for testing the installer against a COPY of a data
   folder (-DataDir); never use it against your real, running Playnite.
@@ -47,6 +53,7 @@ param(
     [switch]$SkipFullscreenConfig,
     [string]$IconPng,
     [string]$WindowTitle,
+    [switch]$NoRunAtLogon,
     [switch]$AllowRunning
 )
 $ErrorActionPreference = 'Stop'
@@ -102,6 +109,26 @@ try {
         ($obj | ConvertTo-Json) | Set-Content -LiteralPath $sf -Encoding UTF8
         if ($NoQuitSteam) { Write-Host "Steam will NOT be quit after games (settings.json written)." }
         if ($WindowTitle) { Write-Host "Playnite's windows will be titled '$WindowTitle' (settings.json written)." }
+    }
+
+    # --- icon / title watcher: start at logon (and now) so Playnite's own icon/title never flash ---------------
+    if (-not $NoRunAtLogon) {
+        $icoFile = Join-Path $target 'pc-games.ico'
+        $titleVal = $WindowTitle
+        if (-not $titleVal) {
+            $sf = Join-Path $target 'settings.json'
+            if (Test-Path -LiteralPath $sf) { try { $titleVal = [string](Get-Content -LiteralPath $sf -Raw | ConvertFrom-Json).WindowTitle } catch { } }
+        }
+        $haveIco = Test-Path -LiteralPath $icoFile
+        if ($haveIco -or $titleVal) {
+            $watcherExe = Join-Path $target 'PlayniteIcon.exe'
+            $argList = @(('"' + $(if ($haveIco) { $icoFile } else { '-' }) + '"'))
+            if ($titleVal) { $argList += ('"' + $titleVal + '"') }
+            $argList += '--resident'
+            Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'PlayniteIconWatcher' -Value ('"' + $watcherExe + '" ' + ($argList -join ' '))
+            Start-Process -FilePath $watcherExe -ArgumentList $argList -WindowStyle Hidden
+            Write-Host "Icon/title watcher registered to start at logon and started now (remove with uninstall.ps1)."
+        }
     }
 }
 finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }

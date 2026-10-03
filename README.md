@@ -84,8 +84,8 @@ canvas, not stretched).
 
 - **Taskbar / Alt-Tab icon of the running window:** `.\install.ps1 -IconPng path\to\icon.png`. Windows takes a
   running program's taskbar icon from the window itself, so a tiny background process (`PlayniteIcon.exe`,
-  compiled by the installer and started by the extension when Playnite starts) stamps the icon onto
-  Playnite's windows and exits a minute after Playnite does.
+  compiled by the installer) stamps the icon onto Playnite's windows - see *How the watcher avoids any
+  flash* below.
 - **Shortcut icons (desktop, Start menu, taskbar pins):** `.\extras\windows\Set-ShortcutIcons.ps1 -IconPng path\to\icon.png`
   converts the PNG to a multi-size `.ico` and sets it on every shortcut that points at Playnite. Shortcuts in
   shared folders (Public Desktop, all-users Start menu) may need an elevated PowerShell; the script tells
@@ -97,6 +97,20 @@ Windows labels a running program's taskbar button (and its Alt-Tab entry) with t
 Playnite sets to "Playnite". `.\install.ps1 -WindowTitle Games` (or `{ "WindowTitle": "Games" }` in
 `settings.json`) makes the same background watcher rename Playnite's windows. Only windows titled exactly
 "Playnite" are renamed, so dialogs keep their own titles.
+
+### How the watcher avoids any flash
+
+If the watcher only started *after* Playnite did, Playnite's own icon and "Playnite" title would show for a
+moment first. So `install.ps1` registers the watcher to start at logon (a per-user `HKCU\...\Run` entry,
+no admin rights) and starts it immediately. It is event-driven: a Windows event hook fires the instant any
+window is created, shown or retitled, and a Playnite window gets the icon/title right then, followed by a
+short fast-polling burst; a slow poll remains as a safety net. It is idle otherwise (a few MB of memory, no
+polling load). In a test on a Notepad window, the custom icon was in place at the first visible moment and a
+wrong title was visible for only 4-16 ms (about one screen refresh).
+
+Prefer not to have a resident process? `.\install.ps1 -NoRunAtLogon` skips the Run entry; the extension then
+starts the watcher when Playnite starts, which can show Playnite's own icon/title for a fraction of a second.
+`uninstall.ps1` removes the Run entry. Timestamps of what the watcher did are in `%TEMP%\playnite-icon.log`.
 
 ## Remove the logo from the Fullscreen main menu
 

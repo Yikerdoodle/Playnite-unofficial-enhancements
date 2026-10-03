@@ -22,6 +22,7 @@ if (-not $AllowRunning -and (Get-Process -Name 'Playnite.DesktopApp','Playnite.F
 }
 Get-Process -Name PlayniteCover, PlayniteIcon -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
+Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'PlayniteIconWatcher' -ErrorAction SilentlyContinue
 $target = Join-Path $DataDir 'Extensions\BlackoutCover'
 if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force; Write-Host "Removed $target" }
 else { Write-Host "Extension folder not found (already removed?)." }
