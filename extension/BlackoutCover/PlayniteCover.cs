@@ -265,6 +265,90 @@ static class Program
         return found;
     }
 
+    // ---- "exit" mode: black cover while Playnite shuts down ----
+    // Playnite shows its own "Exiting Playnite..." screen while it closes, and it cannot be switched off. This
+    // covers the whole primary screen in black (above that screen, click-through) from the moment it is asked to
+    // until Playnite has really gone: no Playnite process left, plus a short grace period. If a NEW Playnite
+    // starts during that grace period (Playnite relaunches itself when you switch Desktop <-> Fullscreen mode)
+    // the cover stays until the new window is on screen, so mode switches are smooth too. Fail-safe: maxSeconds.
+    static string[] PlayniteProcs = { "Playnite.FullscreenApp", "Playnite.DesktopApp" };
+
+    static int CountPlaynite()
+    {
+        int n = 0;
+        foreach (string name in PlayniteProcs) n += Process.GetProcessesByName(name).Length;
+        return n;
+    }
+
+    // a big, visible window of Playnite that is not one of its small progress dialogs
+    static bool BigPlayniteWindow(Rectangle screen)
+    {
+        System.Collections.Generic.List<uint> pids = new System.Collections.Generic.List<uint>();
+        foreach (string name in PlayniteProcs) foreach (Process p in Process.GetProcessesByName(name)) pids.Add((uint)p.Id);
+        if (pids.Count == 0) return false;
+        double screenArea = (double)screen.Width * screen.Height;
+        bool found = false;
+        EnumWindows(delegate(IntPtr h, IntPtr l)
+        {
+            if (!IsWindowVisible(h) || IsIconic(h)) return true;
+            uint wp; GetWindowThreadProcessId(h, out wp);
+            if (!pids.Contains(wp) || Area(h) / screenArea < 0.5) return true;
+            StringBuilder t = new StringBuilder(128); GetWindowText(h, t, 128);
+            string ts = t.ToString();
+            if (ts.StartsWith("Exiting Playnite") || ts.StartsWith("Opening ")) return true;
+            found = true; return false;
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    static int RunExitCover(double max)
+    {
+        bool createdNew;
+        Mutex mx = new Mutex(true, "PlayniteCover-exit", out createdNew);
+        if (!createdNew) return 0;
+        Application.EnableVisualStyles();
+        Rectangle bounds = Screen.PrimaryScreen.Bounds;
+        DateTime start = DateTime.Now, goneSince = DateTime.MinValue, bigSince = DateTime.MinValue;
+        bool relaunched = false;
+        Log("exit cover: started (Playnite processes: " + CountPlaynite() + ")");
+        ArmCover(255, true, true);
+
+        System.Windows.Forms.Timer t = new System.Windows.Forms.Timer();
+        t.Interval = 100;
+        t.Tick += delegate
+        {
+            try
+            {
+                DateTime now = DateTime.Now;
+                if (form != null) SetWindowPos(form.Handle, HWND_TOPMOST, 0, 0, 0, 0, FLAGS);
+                if ((now - start).TotalSeconds >= max) { CloseCover(); Quit("exit cover fail-safe (" + max + " s)"); return; }
+
+                int n = CountPlaynite();
+                if (n > 0 && goneSince == DateTime.MinValue) return;                  // Playnite still shutting down
+                if (n == 0)
+                {
+                    if (goneSince == DateTime.MinValue) { goneSince = now; Log("exit cover: Playnite has exited"); }
+                    // grace period: a relaunch (mode switch) would start a new process very soon
+                    if (!relaunched && (now - goneSince).TotalSeconds >= 1.5) { CloseCover(); Quit("Playnite gone, cover removed"); }
+                    return;
+                }
+                // a new Playnite appeared after the old one exited: keep covering until its window is up
+                if (!relaunched) { relaunched = true; Log("exit cover: Playnite is starting again (mode switch) -> holding the cover until its window is up"); }
+                if (BigPlayniteWindow(bounds))
+                {
+                    if (bigSince == DateTime.MinValue) bigSince = now;
+                    else if ((now - bigSince).TotalSeconds >= 0.6) { CloseCover(); Quit("new Playnite window is up, cover removed"); }
+                }
+                else bigSince = DateTime.MinValue;
+            }
+            catch (Exception ex) { Log("ERROR in exit cover: " + ex.Message); CloseCover(); Quit("error"); }
+        };
+        t.Start();
+        Application.Run();
+        GC.KeepAlive(mx);
+        return 0;
+    }
+
     enum Phase { Wait, MinPending, Watch, Restore }
     // cover kinds while watching: 0 none, 1 backdrop behind a windowed game, 2 armed (transparent, topmost), 3 exit cover
     static int coverKind = 0;
@@ -276,6 +360,9 @@ static class Program
         string mode = a[0], stateFile = a[1];
         double max;
         if (!double.TryParse(a[2], NumberStyles.Float, CultureInfo.InvariantCulture, out max)) max = 30;
+
+        // "exit": black cover while Playnite shuts down (see RunExitCover). Independent of the launch helper.
+        if (mode == "exit") return RunExitCover(max);
 
         // "stop" is a no-op: the running "start" helper detects the exit itself.
         if (mode != "start") return 0;

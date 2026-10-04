@@ -91,6 +91,17 @@ canvas, not stretched).
   shared folders (Public Desktop, all-users Start menu) may need an elevated PowerShell; the script tells
   you which ones. `-Restore` puts the default icon back.
 
+### The "Exiting Playnite..." screen
+
+Fullscreen mode shows its own "Exiting Playnite..." screen (logo and spinner) while it shuts down, and Playnite
+has no setting to turn it off. So it is covered instead: the moment that screen appears (or Playnite reports that
+it is stopping) a black cover goes over the whole primary screen and stays until Playnite has really gone - no
+Playnite process left, plus a short grace period. If a new Playnite starts during that grace period (Playnite
+relaunches itself when you switch between Desktop and Fullscreen mode) the cover is held until the new window
+is on screen, so mode switches are smooth too. Two independent triggers start it, and only one runs: the
+extension's `OnApplicationStopped` and the window watcher (it recognises a window titled "Exiting Playnite..."
+belonging to the Fullscreen app, so it needs an English Playnite). It has a 40-second fail-safe and does nothing
+in Desktop mode. Opt out with `{ "CoverExit": false }` in `settings.json`.
 ### Dialogs that need you are never hidden
 
 While the helper keeps Playnite on top during a launch (and again while it restores Playnite after a game),

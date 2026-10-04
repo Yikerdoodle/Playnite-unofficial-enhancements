@@ -39,12 +39,13 @@ function Get-CoverPaths {
 }
 
 function Get-CoverSettings {
-    $s = @{ QuitSteamAfterGame = $true; WindowTitle = ''; HideSplashScreen = $false }
+    $s = @{ QuitSteamAfterGame = $true; WindowTitle = ''; HideSplashScreen = $false; CoverExit = $true }
     try {
         $p = Get-CoverPaths
         if (Test-Path -LiteralPath $p.Settings) {
             $j = Get-Content -LiteralPath $p.Settings -Raw | ConvertFrom-Json
             if ($null -ne $j.QuitSteamAfterGame) { $s.QuitSteamAfterGame = [bool]$j.QuitSteamAfterGame }
+            if ($null -ne $j.CoverExit) { $s.CoverExit = [bool]$j.CoverExit }
             if ($j.WindowTitle) { $s.WindowTitle = [string]$j.WindowTitle }
             if ($null -ne $j.HideSplashScreen) { $s.HideSplashScreen = [bool]$j.HideSplashScreen }
         }
@@ -68,6 +69,22 @@ function Stop-SteamClient {
     } else {
         Write-CoverLog 'BlackoutCover: steam.exe not found, could not quit Steam.' -IsError
     }
+}
+
+function OnApplicationStopped {
+    param($evnArgs)
+    # Fullscreen mode only: Playnite shows its own "Exiting Playnite..." screen while it shuts down and that
+    # cannot be switched off, so cover the screen in black until Playnite has really gone (see PlayniteCover.exe,
+    # "exit" mode). The window watcher also starts it the instant that screen appears; only one runs.
+    # Opt out with { "CoverExit": false } in settings.json.
+    try {
+        if (-not (Test-FullscreenMode)) { return }
+        if (-not (Get-CoverSettings).CoverExit) { return }
+        $p = Get-CoverPaths
+        if (-not (Test-Path -LiteralPath $p.Exe)) { return }
+        Start-Process -FilePath $p.Exe -ArgumentList 'exit', ('"' + $p.State + '"'), '40'
+        Write-CoverLog 'BlackoutCover: started the exit cover.'
+    } catch { Write-CoverLog "BlackoutCover OnApplicationStopped: $($_.Exception.Message)" -IsError }
 }
 
 function OnApplicationStarted {

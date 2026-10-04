@@ -70,6 +70,9 @@ static class PlayniteIcon
     const uint WINEVENT_OUTOFCONTEXT = 0;
 
     static bool haveIcon, haveTitle, resident, hideSplash;
+    static bool exitCover = true;                                   // cover Fullscreen mode's "Exiting Playnite..." screen
+    static string coverExe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "PlayniteCover.exe");
+    static DateTime nextExitCover = DateTime.MinValue;
     static HashSet<string> splashClasses = new HashSet<string>(new string[] { "splashscreen" });
     static HashSet<IntPtr> seenWindows = new HashSet<IntPtr>();
     static IntPtr big = IntPtr.Zero, small = IntPtr.Zero;
@@ -133,11 +136,30 @@ static class PlayniteIcon
                     " visible=" + IsWindowVisible(h) + " title='" + tt + "' (" + why + ")");
             }
         }
-        if (haveTitle || logLines < 60)
         {
             StringBuilder sb = new StringBuilder(256);
             GetWindowText(h, sb, 256);
             before = sb.ToString();
+        }
+        // Fullscreen mode's own "Exiting Playnite..." screen cannot be switched off, so cover it in black until
+        // Playnite has really gone (PlayniteCover.exe, "exit" mode). Only for the Fullscreen app's window.
+        if (exitCover && before.StartsWith("Exiting Playnite", StringComparison.Ordinal) && DateTime.Now >= nextExitCover)
+        {
+            uint wp; GetWindowThreadProcessId(h, out wp);
+            string pn = "";
+            try { pn = Process.GetProcessById((int)wp).ProcessName.ToLowerInvariant(); } catch { }
+            if (pn == "playnite.fullscreenapp" && File.Exists(coverExe))
+            {
+                nextExitCover = DateTime.Now.AddSeconds(5);
+                try
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo(coverExe, "exit \"x\" 40");
+                    psi.UseShellExecute = false; psi.CreateNoWindow = true;
+                    Process.Start(psi);
+                    Log("'Exiting Playnite' screen seen on window " + h + " -> started the black exit cover");
+                }
+                catch (Exception ex) { Log("could not start the exit cover: " + ex.Message); }
+            }
         }
         if (haveIcon && Send(h, WM_GETICON, ICON_BIG, IntPtr.Zero) != big)
         {
@@ -197,6 +219,7 @@ static class PlayniteIcon
         {
             if (s == "--resident") resident = true;
             else if (s == "--hide-splash") hideSplash = true;
+            else if (s == "--no-exit-cover") exitCover = false;
             else if (s.StartsWith("--splash-class=")) splashClasses = new HashSet<string>(s.Substring(15).ToLowerInvariant().Split(','));
             else if (s.StartsWith("--names=")) { names = new HashSet<string>(s.Substring(8).ToLowerInvariant().Split(',')); }
             else if (s.StartsWith("--match=")) match = s.Substring(8);
@@ -206,6 +229,13 @@ static class PlayniteIcon
         if (pos.Count >= 2) title = pos[1];
         haveIcon = iconPath.Length > 0 && File.Exists(iconPath);
         haveTitle = title.Length > 0;
+        // the same opt-out as the extension: { "CoverExit": false } in settings.json next to this program
+        try
+        {
+            string sj = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json");
+            if (File.Exists(sj) && System.Text.RegularExpressions.Regex.IsMatch(File.ReadAllText(sj), "\"CoverExit\"\\s*:\\s*false")) exitCover = false;
+        }
+        catch { }
         if (!haveIcon && !haveTitle && !hideSplash) return 2;
 
         bool createdNew;
@@ -241,7 +271,7 @@ static class PlayniteIcon
         // window created / shown, and (separately, to avoid the very chatty location/state events in between)
         // title changed - so a title Playnite sets after creating the window is fixed at once too
         IntPtr hook = SetWinEventHook(EVENT_OBJECT_CREATE, EVENT_OBJECT_SHOW, IntPtr.Zero, hookProc, 0, 0, WINEVENT_OUTOFCONTEXT);
-        IntPtr hook2 = haveTitle ? SetWinEventHook(EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_NAMECHANGE, IntPtr.Zero, hookProc, 0, 0, WINEVENT_OUTOFCONTEXT) : IntPtr.Zero;
+        IntPtr hook2 = (haveTitle || exitCover) ? SetWinEventHook(EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_NAMECHANGE, IntPtr.Zero, hookProc, 0, 0, WINEVENT_OUTOFCONTEXT) : IntPtr.Zero;
         Log(hook == IntPtr.Zero ? "WARNING: could not install the window event hook (polling only)" : "window event hooks installed");
         ApplyToAll();
         Application.Run();
