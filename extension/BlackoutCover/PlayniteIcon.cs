@@ -32,9 +32,35 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Drawing;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
+
+// Black full-screen layer: topmost, click-through, never takes focus. Shown at alpha 0 (invisible) while Playnite's
+// Fullscreen window is on screen, and turned to alpha 255 the instant that window goes away (see FlipExitCover).
+class ExitCoverForm : Form
+{
+    public ExitCoverForm()
+    {
+        FormBorderStyle = FormBorderStyle.None;
+        StartPosition = FormStartPosition.Manual;
+        ShowInTaskbar = false;
+        BackColor = Color.Black;
+        TopMost = true;
+        Bounds = Screen.PrimaryScreen.Bounds;
+    }
+    protected override bool ShowWithoutActivation { get { return true; } }
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            CreateParams cp = base.CreateParams;
+            cp.ExStyle |= 0x08000000 | 0x00000080 | 0x00080000 | 0x00000020;   // NOACTIVATE | TOOLWINDOW | LAYERED | TRANSPARENT
+            return cp;
+        }
+    }
+}
 
 static class PlayniteIcon
 {
@@ -54,6 +80,10 @@ static class PlayniteIcon
     static extern int GetClassName(IntPtr h, StringBuilder text, int max);
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
+    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+    [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+    [DllImport("user32.dll")] static extern bool SetLayeredWindowAttributes(IntPtr h, uint key, byte alpha, uint flags);
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
     [StructLayout(LayoutKind.Sequential)] struct RECT { public int L, T, R, B; }
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -66,13 +96,30 @@ static class PlayniteIcon
     const int ICON_SMALL = 0, ICON_BIG = 1;
     const uint SMTO_ABORTIFHUNG = 0x0002;
     const uint IMAGE_ICON = 1, LR_LOADFROMFILE = 0x0010;
-    const uint EVENT_OBJECT_CREATE = 0x8000, EVENT_OBJECT_SHOW = 0x8002, EVENT_OBJECT_NAMECHANGE = 0x800C;
+    const uint EVENT_OBJECT_CREATE = 0x8000, EVENT_OBJECT_DESTROY = 0x8001, EVENT_OBJECT_SHOW = 0x8002, EVENT_OBJECT_HIDE = 0x8003, EVENT_OBJECT_NAMECHANGE = 0x800C;
+    static readonly IntPtr HWND_TOPMOST = (IntPtr)(-1);
+    const uint SWP_FLAGS = 0x0001 | 0x0002 | 0x0010;   // NOSIZE | NOMOVE | NOACTIVATE
     const uint WINEVENT_OUTOFCONTEXT = 0;
 
     static bool haveIcon, haveTitle, resident, hideSplash;
     static bool exitCover = true;                                   // cover Fullscreen mode's "Exiting Playnite..." screen
     static string coverExe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "PlayniteCover.exe");
     static DateTime nextExitCover = DateTime.MinValue;
+    // exit cover that is ALREADY in place (invisible) while Playnite's Fullscreen window is on screen
+    // Fullscreen creates more than one big window while it starts (one of them goes away again), so ALL of them are
+    // tracked and an exit is only assumed when the LAST one is gone.
+    static HashSet<IntPtr> fsWins = new HashSet<IntPtr>();
+
+    static bool AnyFsShowing()
+    {
+        foreach (IntPtr w in fsWins)
+            if (IsWindow(w) && IsWindowVisible(w) && !IsIconic(w)) return true;
+        return false;
+    }
+    static ExitCoverForm armed;                          // the invisible/black layer
+    static bool flipped, helperStarted;                  // armed layer is black / the PlayniteCover "exit" helper was started
+    static DateTime flippedAt = DateTime.MinValue, noPlayniteSince = DateTime.MinValue;
+    static Dictionary<uint, KeyValuePair<string, DateTime>> pnCache = new Dictionary<uint, KeyValuePair<string, DateTime>>();
     static HashSet<string> splashClasses = new HashSet<string>(new string[] { "splashscreen" });
     static HashSet<IntPtr> seenWindows = new HashSet<IntPtr>();
     static IntPtr big = IntPtr.Zero, small = IntPtr.Zero;
@@ -141,24 +188,25 @@ static class PlayniteIcon
             GetWindowText(h, sb, 256);
             before = sb.ToString();
         }
-        // Fullscreen mode's own "Exiting Playnite..." screen cannot be switched off, so cover it in black until
-        // Playnite has really gone (PlayniteCover.exe, "exit" mode). Only for the Fullscreen app's window.
-        if (exitCover && before.StartsWith("Exiting Playnite", StringComparison.Ordinal) && DateTime.Now >= nextExitCover)
+        // Fullscreen mode: (1) remember the main window, so an invisible cover can sit over it, ready for the exit;
+        // (2) react at once to Playnite's own "Exiting Playnite..." screen, which cannot be switched off.
+        if (exitCover)
         {
             uint wp; GetWindowThreadProcessId(h, out wp);
-            string pn = "";
-            try { pn = Process.GetProcessById((int)wp).ProcessName.ToLowerInvariant(); } catch { }
-            if (pn == "playnite.fullscreenapp" && File.Exists(coverExe))
+            if (ProcNameOf(wp) == "playnite.fullscreenapp")
             {
-                nextExitCover = DateTime.Now.AddSeconds(5);
-                try
+                if (before.StartsWith("Exiting Playnite", StringComparison.Ordinal))
                 {
-                    ProcessStartInfo psi = new ProcessStartInfo(coverExe, "exit \"x\" 40");
-                    psi.UseShellExecute = false; psi.CreateNoWindow = true;
-                    Process.Start(psi);
-                    Log("'Exiting Playnite' screen seen on window " + h + " -> started the black exit cover");
+                    FlipExitCover("'Exiting Playnite' screen seen on window " + h);
+                    StartExitHelper();
                 }
-                catch (Exception ex) { Log("could not start the exit cover: " + ex.Message); }
+                else if (!before.StartsWith("Opening ", StringComparison.Ordinal) && IsWindowVisible(h))
+                {
+                    RECT rc2; GetWindowRect(h, out rc2);
+                    Rectangle pb = Screen.PrimaryScreen.Bounds;
+                    if ((double)(rc2.R - rc2.L) * (rc2.B - rc2.T) >= 0.5 * pb.Width * pb.Height && fsWins.Add(h))
+                        Log("tracking Fullscreen window " + h + " (" + fsWins.Count + " tracked)");
+                }
             }
         }
         if (haveIcon && Send(h, WM_GETICON, ICON_BIG, IntPtr.Zero) != big)
@@ -177,10 +225,111 @@ static class PlayniteIcon
         return changed;
     }
 
+    static string ProcNameOf(uint pid)
+    {
+        KeyValuePair<string, DateTime> c;
+        if (pnCache.TryGetValue(pid, out c) && (DateTime.Now - c.Value).TotalSeconds < 15) return c.Key;
+        string n = "";
+        try { n = Process.GetProcessById((int)pid).ProcessName.ToLowerInvariant(); } catch { }
+        pnCache[pid] = new KeyValuePair<string, DateTime>(n, DateTime.Now);
+        return n;
+    }
+
+    static int CountPlaynite()
+    {
+        int n = 0;
+        foreach (string name in new string[] { "Playnite.FullscreenApp", "Playnite.DesktopApp" }) n += Process.GetProcessesByName(name).Length;
+        return n;
+    }
+
+    // ---- the exit cover that is already in place ----
+    static void EnsureArmed()
+    {
+        if (armed != null) return;
+        armed = new ExitCoverForm();
+        armed.Show();
+        SetLayeredWindowAttributes(armed.Handle, 0, 0, 2);                       // alpha 0: invisible, click-through
+        SetWindowPos(armed.Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_FLAGS);
+        Log("exit cover armed (invisible) over the Fullscreen window");
+    }
+
+    static void CloseArmed()
+    {
+        if (armed != null) { armed.Close(); armed = null; }
+        flipped = false; helperStarted = false;
+    }
+
+    // Playnite's Fullscreen window is going away (or its exit screen showed up): make the layer black NOW.
+    static void FlipExitCover(string why)
+    {
+        if (!exitCover) return;
+        if (armed == null) { armed = new ExitCoverForm(); armed.Show(); }
+        SetLayeredWindowAttributes(armed.Handle, 0, 255, 2);
+        SetWindowPos(armed.Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_FLAGS);
+        if (!flipped) { flipped = true; flippedAt = DateTime.Now; Log("exit cover BLACK now: " + why); }
+    }
+
+    // The long-lived exit helper (PlayniteCover.exe exit): holds the cover until Playnite has really gone.
+    static void StartExitHelper()
+    {
+        if (helperStarted || !File.Exists(coverExe)) return;
+        try
+        {
+            ProcessStartInfo psi = new ProcessStartInfo(coverExe, "exit \"x\" 40");
+            psi.UseShellExecute = false; psi.CreateNoWindow = true;
+            Process.Start(psi);
+            helperStarted = true;
+            Log("started the exit helper (PlayniteCover.exe exit)");
+        }
+        catch (Exception ex) { Log("could not start the exit helper: " + ex.Message); }
+    }
+
+    // Called from the timer: keep the invisible cover in place while the Fullscreen window is showing, and release the
+    // black one when it is no longer needed (including false alarms, so the screen can never stay black).
+    static void ManageArmed()
+    {
+        if (!exitCover) return;
+        DateTime now = DateTime.Now;
+        fsWins.RemoveWhere(delegate(IntPtr w) { return !IsWindow(w); });          // forget destroyed windows
+        bool mainShowing = AnyFsShowing();
+
+        if (flipped)
+        {
+            double sec = (now - flippedAt).TotalSeconds;
+            int helpers = Process.GetProcessesByName("PlayniteCover").Length;
+            int pl = CountPlaynite();
+            if (pl == 0) { if (noPlayniteSince == DateTime.MinValue) noPlayniteSince = now; } else noPlayniteSince = DateTime.MinValue;
+
+            if (helperStarted && helpers > 0 && sec >= 1.2) { CloseArmed(); fsWins.Clear(); Log("exit cover: the helper's cover has taken over -> this layer released"); return; }
+            if (pl == 0 && (now - noPlayniteSince).TotalSeconds >= 2.0 && helpers == 0) { CloseArmed(); fsWins.Clear(); Log("exit cover: Playnite gone -> released"); return; }
+            if (sec >= 45) { CloseArmed(); fsWins.Clear(); Log("exit cover: fail-safe (45 s) -> released"); return; }
+            // false alarm: the window is back, or nothing followed within a few seconds while Playnite keeps running
+            if (!helperStarted && pl > 0 && (mainShowing || sec >= 6))
+            {
+                flipped = false;
+                if (armed != null) SetLayeredWindowAttributes(armed.Handle, 0, 0, 2);   // invisible again
+                Log("exit cover: false alarm (Playnite is still running) -> invisible again");
+            }
+            return;
+        }
+
+        if (mainShowing) { EnsureArmed(); SetWindowPos(armed.Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_FLAGS); }
+        else if (armed != null) { CloseArmed(); Log("exit cover disarmed (Fullscreen window not showing)"); }
+    }
+
     static void OnWinEvent(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
     {
         try
         {
+            // The earliest signal of an exit: Playnite's Fullscreen main window is hidden or destroyed.
+            if (exitCover && idObject == 0 && idChild == 0 && (ev == EVENT_OBJECT_DESTROY || ev == EVENT_OBJECT_HIDE) && fsWins.Contains(hwnd))
+            {
+                if (ev == EVENT_OBJECT_HIDE && IsIconic(hwnd)) return;          // minimized (e.g. behind a game), not closed
+                if (!AnyFsShowing())                                             // that was the last Fullscreen window
+                    FlipExitCover("last Fullscreen window " + (ev == EVENT_OBJECT_DESTROY ? "destroyed" : "hidden"));
+                return;
+            }
+            if (ev == EVENT_OBJECT_DESTROY || ev == EVENT_OBJECT_HIDE) return;
             if (idObject != 0 || idChild != 0 || hwnd == IntPtr.Zero) return;   // OBJID_WINDOW only
             if (GetParent(hwnd) != IntPtr.Zero) return;                          // top-level windows only
             uint pid; GetWindowThreadProcessId(hwnd, out pid);
@@ -257,9 +406,11 @@ static class PlayniteIcon
         {
             try
             {
-                if (DateTime.Now < burstUntil) { ApplyToAll(); return; }          // fast burst after a new window
-                if (timer.Interval != 1500) timer.Interval = 1500;
+                if (DateTime.Now < burstUntil) { ApplyToAll(); ManageArmed(); return; }   // fast burst after a new window
+                if (timer.Interval != 1500 && !flipped) timer.Interval = 1500;
                 ApplyToAll();                                                      // slow safety net
+                ManageArmed();
+                if (flipped && timer.Interval != 250) timer.Interval = 250;       // keep a close eye on a black layer
                 if (!resident && (DateTime.Now - lastSeen).TotalSeconds > 60 && (DateTime.Now - startedAt).TotalSeconds > 60)
                 { Log("exit: Playnite gone for a minute"); Application.ExitThread(); }
             }
@@ -270,7 +421,7 @@ static class PlayniteIcon
         hookProc = OnWinEvent;
         // window created / shown, and (separately, to avoid the very chatty location/state events in between)
         // title changed - so a title Playnite sets after creating the window is fixed at once too
-        IntPtr hook = SetWinEventHook(EVENT_OBJECT_CREATE, EVENT_OBJECT_SHOW, IntPtr.Zero, hookProc, 0, 0, WINEVENT_OUTOFCONTEXT);
+        IntPtr hook = SetWinEventHook(EVENT_OBJECT_CREATE, EVENT_OBJECT_HIDE, IntPtr.Zero, hookProc, 0, 0, WINEVENT_OUTOFCONTEXT);   // create, destroy, show, hide
         IntPtr hook2 = (haveTitle || exitCover) ? SetWinEventHook(EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_NAMECHANGE, IntPtr.Zero, hookProc, 0, 0, WINEVENT_OUTOFCONTEXT) : IntPtr.Zero;
         Log(hook == IntPtr.Zero ? "WARNING: could not install the window event hook (polling only)" : "window event hooks installed");
         ApplyToAll();

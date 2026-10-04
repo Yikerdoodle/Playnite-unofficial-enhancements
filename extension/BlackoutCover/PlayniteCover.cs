@@ -86,7 +86,7 @@ static class Program
 
     static readonly string[] Ignore = {
         "steam", "steamwebhelper", "steamservice", "playnite.fullscreenapp", "playnite.desktopapp",
-        "playnitecover", "explorer", "applicationframehost", "textinputhost", "searchhost",
+        "playnitecover", "playniteicon", "explorer", "applicationframehost", "textinputhost", "searchhost",
         "startmenuexperiencehost", "shellexperiencehost", "dwm", "sunshine", "conhost"
     };
 

@@ -98,9 +98,15 @@ has no setting to turn it off. So it is covered instead: the moment that screen 
 it is stopping) a black cover goes over the whole primary screen and stays until Playnite has really gone - no
 Playnite process left, plus a short grace period. If a new Playnite starts during that grace period (Playnite
 relaunches itself when you switch between Desktop and Fullscreen mode) the cover is held until the new window
-is on screen, so mode switches are smooth too. Two independent triggers start it, and only one runs: the
-extension's `OnApplicationStopped` and the window watcher (it recognises a window titled "Exiting Playnite..."
-belonging to the Fullscreen app, so it needs an English Playnite). It has a 40-second fail-safe and does nothing
+is on screen, so mode switches are smooth too. To leave no gap between clicking "Exit Playnite" and
+that screen appearing (the Fullscreen window disappears first), the window watcher keeps an **invisible**,
+click-through cover over the screen while Playnite's Fullscreen window is showing and turns it black the
+instant the LAST Fullscreen window is hidden or destroyed (Fullscreen creates more than one big window while it
+starts, so all of them are tracked; minimizing, e.g. behind a game, never triggers it, and the layer is removed
+while no Fullscreen window is showing). If nothing follows within a few seconds while Playnite keeps running, it
+turns invisible again, so it can never leave the screen black. It also reacts to a window titled "Exiting
+Playnite..." (English Playnite) and hands over to a long-lived helper (`PlayniteCover.exe exit`), and the
+extension's `OnApplicationStopped` starts the same helper as a backup; only one helper runs. It has a 40-second fail-safe and does nothing
 in Desktop mode. Opt out with `{ "CoverExit": false }` in `settings.json`.
 ### Dialogs that need you are never hidden
 
