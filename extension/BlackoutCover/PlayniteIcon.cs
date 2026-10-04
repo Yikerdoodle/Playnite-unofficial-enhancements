@@ -208,7 +208,10 @@ static class PlayniteIcon
                     RECT rc2; GetWindowRect(h, out rc2);
                     Rectangle pb = Screen.PrimaryScreen.Bounds;
                     if ((double)(rc2.R - rc2.L) * (rc2.B - rc2.T) >= 0.5 * pb.Width * pb.Height && fsWins.Add(h))
+                    {
+                        fsSeen = true;
                         Log("tracking Fullscreen window " + h + " (" + fsWins.Count + " tracked)");
+                    }
                 }
             }
         }
@@ -319,10 +322,16 @@ static class PlayniteIcon
     // launch helper (also PlayniteCover.exe) is alive for the whole session and Playnite is minimized on purpose.
     // (Playnite hides/minimizes its windows before it starts its own exit screen, so "minimized" counts as gone.)
     static bool falseAlarmLatched;   // a false alarm was corrected: stay quiet until a Fullscreen window is showing again
+    static bool fsSeen;              // a Fullscreen window has been tracked (stays true after the windows are destroyed)
+
+    static void ResetTracking()
+    {
+        fsWins.Clear(); fsBig.Clear(); fsSeen = false; falseAlarmLatched = false;
+    }
 
     static void CheckExitNow(string why)
     {
-        if (!exitCover || flipped || falseAlarmLatched || fsWins.Count == 0) return;
+        if (!exitCover || flipped || falseAlarmLatched || !fsSeen) return;
         if (AnyFsShowing()) return;
         if (Process.GetProcessesByName("PlayniteCover").Length > 0) return;
         FlipExitCover(why);
@@ -349,7 +358,10 @@ static class PlayniteIcon
     {
         if (!exitCover) return;
         DateTime now = DateTime.Now;
-        fsWins.RemoveWhere(delegate(IntPtr w) { return !IsWindow(w); });          // forget destroyed windows
+        // NOTE: destroyed windows are NOT pruned here. Pruning them before their hide/destroy events arrive made
+        // the events look like they belonged to unknown windows, so the exit was missed. They are removed when
+        // their DESTROY event is handled, and the whole list is reset when a flip is released.
+        if (fsWins.Count > 200) fsWins.RemoveWhere(delegate(IntPtr w) { return !IsWindow(w); });
         bool mainShowing = AnyFsShowing();
 
         if (flipped)
@@ -359,9 +371,9 @@ static class PlayniteIcon
             int pl = CountPlaynite();
             if (pl == 0) { if (noPlayniteSince == DateTime.MinValue) noPlayniteSince = now; } else noPlayniteSince = DateTime.MinValue;
 
-            if (helpers > 0 && sec >= 1.2) { CloseArmed(); fsWins.Clear(); Log("exit cover: the helper's cover has taken over -> this layer released"); return; }
-            if (pl == 0 && (now - noPlayniteSince).TotalSeconds >= 2.0 && helpers == 0) { CloseArmed(); fsWins.Clear(); Log("exit cover: Playnite gone -> released"); return; }
-            if (sec >= 45) { CloseArmed(); fsWins.Clear(); Log("exit cover: fail-safe (45 s) -> released"); return; }
+            if (helpers > 0 && sec >= 1.2) { CloseArmed(); ResetTracking(); Log("exit cover: the helper's cover has taken over -> this layer released"); return; }
+            if (pl == 0 && (now - noPlayniteSince).TotalSeconds >= 2.0 && helpers == 0) { CloseArmed(); ResetTracking(); Log("exit cover: Playnite gone -> released"); return; }
+            if (sec >= 45) { CloseArmed(); ResetTracking(); Log("exit cover: fail-safe (45 s) -> released"); return; }
             // false alarm: the window is back, or nothing followed within a few seconds while Playnite keeps running
             if (helpers == 0 && pl > 0 && (mainShowing || sec >= (helperStarted ? 6 : 1.5)))
             {
@@ -425,6 +437,7 @@ static class PlayniteIcon
                 burstUntil = DateTime.Now.AddSeconds(2);                          // a minimize only completes a moment later: re-check fast
                 if (timer.Interval != 25) timer.Interval = 25;
                 CheckExitNow("Fullscreen window " + (ev == EVENT_OBJECT_DESTROY ? "destroyed" : ev == EVENT_OBJECT_HIDE ? "hidden" : "minimizing"));
+                if (ev == EVENT_OBJECT_DESTROY) fsWins.Remove(hwnd);              // handles can be reused by Windows once destroyed
                 return;
             }
             if (goneEvent) return;
