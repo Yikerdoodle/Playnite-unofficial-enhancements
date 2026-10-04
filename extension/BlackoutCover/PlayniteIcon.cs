@@ -131,12 +131,13 @@ static class PlayniteIcon
     static System.Windows.Forms.Timer timer;
     static string logPath = Path.Combine(Path.GetTempPath(), "playnite-icon.log");
     static int logLines = 0;
+    static readonly object logLock = new object();
     static WinEventProc hookProc;   // kept referenced so the delegate is not collected
 
     static void Log(string msg)
     {
-        if (logLines++ > 400) return;
-        try { File.AppendAllText(logPath, DateTime.Now.ToString("HH:mm:ss.fff") + "  " + msg + "\r\n"); } catch { }
+        if (logLines++ > 1500) return;
+        lock (logLock) { try { File.AppendAllText(logPath, DateTime.Now.ToString("HH:mm:ss.fff") + "  " + msg + "\r\n"); } catch { } }
     }
 
     static IntPtr Send(IntPtr h, uint msg, int w, IntPtr l)
@@ -172,7 +173,8 @@ static class PlayniteIcon
             string cls = cn.ToString();
             if (hideSplash && splashClasses.Contains(cls.ToLowerInvariant()) && IsWindowVisible(h))
             {
-                ShowWindow(h, 0);   // SW_HIDE
+                IntPtr hs = h;
+                ThreadPool.QueueUserWorkItem(delegate { ShowWindow(hs, 0); });   // SW_HIDE, off the event thread (cross-process, may block)
                 Log("HID splash window " + h + " (class '" + cls + "', " + why + ")");
                 return true;
             }
@@ -210,6 +212,50 @@ static class PlayniteIcon
                 }
             }
         }
+        // Stamping the icon / title needs cross-process messages, which BLOCK while Playnite's UI thread is busy
+        // (for example while it is shutting down). That must never happen on the thread that listens for window
+        // events - it would sit blind exactly when an exit starts - so it is handed to a worker thread.
+        if ((haveIcon && (IsWindowVisible(h) || why.StartsWith("window created", StringComparison.Ordinal))) || (haveTitle && before == match))
+            Enqueue(h);
+        return changed;
+    }
+
+    // ---- worker thread for the cross-process messages (icon / title) ----
+    static readonly object stampLock = new object();
+    static readonly Queue<IntPtr> stampQueue = new Queue<IntPtr>();
+    static readonly HashSet<IntPtr> stampPending = new HashSet<IntPtr>();
+    static readonly AutoResetEvent stampSignal = new AutoResetEvent(false);
+
+    static void Enqueue(IntPtr h)
+    {
+        lock (stampLock) { if (stampPending.Add(h)) stampQueue.Enqueue(h); }
+        stampSignal.Set();
+    }
+
+    static void StampWorker()
+    {
+        while (true)
+        {
+            stampSignal.WaitOne();
+            while (true)
+            {
+                IntPtr h;
+                lock (stampLock)
+                {
+                    if (stampQueue.Count == 0) break;
+                    h = stampQueue.Dequeue(); stampPending.Remove(h);
+                }
+                try { Stamp(h); } catch { }
+            }
+        }
+    }
+
+    static void Stamp(IntPtr h)
+    {
+        bool changed = false;
+        StringBuilder sb = new StringBuilder(256);
+        GetWindowText(h, sb, 256);
+        string before = sb.ToString();
         if (haveIcon && Send(h, WM_GETICON, ICON_BIG, IntPtr.Zero) != big)
         {
             Send(h, WM_SETICON, ICON_BIG, big);
@@ -222,8 +268,7 @@ static class PlayniteIcon
             SendMessageTimeout(h, WM_SETTEXT, IntPtr.Zero, title, SMTO_ABORTIFHUNG, 500, out res);
             changed = true;
         }
-        if (changed) Log("set on window " + h + " (" + why + "), title was '" + before + "'");
-        return changed;
+        if (changed) Log("set on window " + h + ", title was '" + before + "'");
     }
 
     static string ProcNameOf(uint pid)
@@ -335,10 +380,43 @@ static class PlayniteIcon
         }
     }
 
+    // ---- diagnostics: the life of Playnite Fullscreen's big windows, to see exactly what happens at an exit ----
+    static HashSet<IntPtr> fsBig = new HashSet<IntPtr>();
+
+    static string EvName(uint ev)
+    {
+        return ev == EVENT_OBJECT_CREATE ? "CREATE" : ev == EVENT_OBJECT_DESTROY ? "DESTROY" : ev == EVENT_OBJECT_SHOW ? "SHOW" :
+               ev == EVENT_OBJECT_HIDE ? "HIDE" : ev == EVENT_SYSTEM_MINIMIZESTART ? "MINIMIZESTART" : ev == EVENT_OBJECT_NAMECHANGE ? "TITLE" : ev.ToString("X");
+    }
+
+    static void Trace(uint ev, IntPtr hwnd)
+    {
+        try
+        {
+            bool known = fsBig.Contains(hwnd);
+            if (!known && (ev == EVENT_OBJECT_CREATE || ev == EVENT_OBJECT_SHOW))
+            {
+                uint wp; GetWindowThreadProcessId(hwnd, out wp);
+                if (ProcNameOf(wp) != "playnite.fullscreenapp" || GetParent(hwnd) != IntPtr.Zero || !IsWindowVisible(hwnd)) return;
+                RECT r0; GetWindowRect(hwnd, out r0);
+                Rectangle pb = Screen.PrimaryScreen.Bounds;
+                if ((double)(r0.R - r0.L) * (r0.B - r0.T) < 0.2 * pb.Width * pb.Height) return;
+                fsBig.Add(hwnd); known = true;
+            }
+            if (!known) return;
+            StringBuilder t = new StringBuilder(128); GetWindowText(hwnd, t, 128);
+            RECT rr; GetWindowRect(hwnd, out rr);
+            Log("TRACE " + EvName(ev) + " " + hwnd + " visible=" + IsWindowVisible(hwnd) + " iconic=" + IsIconic(hwnd) +
+                " exists=" + IsWindow(hwnd) + " size=" + (rr.R - rr.L) + "x" + (rr.B - rr.T) + " title='" + t + "'");
+        }
+        catch { }
+    }
+
     static void OnWinEvent(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
     {
         try
         {
+            if (exitCover && idObject == 0 && idChild == 0 && hwnd != IntPtr.Zero) Trace(ev, hwnd);
             // The earliest signal of an exit: Playnite's Fullscreen main window is hidden or destroyed.
             bool goneEvent = ev == EVENT_OBJECT_DESTROY || ev == EVENT_OBJECT_HIDE || ev == EVENT_SYSTEM_MINIMIZESTART;
             if (exitCover && idObject == 0 && idChild == 0 && goneEvent && fsWins.Contains(hwnd))
@@ -419,6 +497,10 @@ static class PlayniteIcon
             small = LoadImage(IntPtr.Zero, iconPath, IMAGE_ICON, 32, 32, LR_LOADFROMFILE);
             if (big == IntPtr.Zero || small == IntPtr.Zero) { haveIcon = false; if (!haveTitle) return 3; }
         }
+
+        Thread stampThread = new Thread(StampWorker);
+        stampThread.IsBackground = true;
+        stampThread.Start();
 
         timer = new System.Windows.Forms.Timer();
         timer.Interval = 1500;

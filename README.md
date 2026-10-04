@@ -108,7 +108,14 @@ launch helper is alive for the whole session, and Playnite is minimized on purpo
 a moment while Playnite keeps running (for example you minimized it by hand), it turns invisible again and stays
 quiet until a Fullscreen window is showing, so it can never leave the screen black. It also reacts to a window titled "Exiting
 Playnite..." (English Playnite) and hands over to a long-lived helper (`PlayniteCover.exe exit`), and the
-extension's `OnApplicationStopped` starts the same helper as a backup; only one helper runs. It has a 40-second fail-safe and does nothing
+extension's `OnApplicationStopped` starts the same helper as a backup; only one helper runs.
+
+The watcher does all its cross-process work (stamping icons and titles, which sends messages to Playnite's windows)
+on a separate worker thread. This matters: while Playnite is busy shutting down, those messages block, and when
+that happened on the thread that listens for window events the watcher went blind exactly when an exit started
+(measured: against a window whose UI thread is busy while closing, the old design never turned black at all; this
+one does 11 ms after the window hides). Every show / hide / destroy / minimize of Playnite's big Fullscreen windows
+is logged with a timestamp ("TRACE" lines in `%TEMP%\playnite-icon.log`) to make any future timing question easy to answer. It has a 40-second fail-safe and does nothing
 in Desktop mode. Opt out with `{ "CoverExit": false }` in `settings.json`.
 ### Dialogs that need you are never hidden
 
