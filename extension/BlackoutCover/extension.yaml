@@ -1,6 +1,7 @@
 Id: BlackoutCover_Script
 Name: Seamless Fullscreen (Blackout Cover)
 Author: Yikerdoodle
-Version: 1.0
+Version: 1.1
 Module: BlackoutCover.psm1
 Type: Script
+Icon: pc-games.ico
