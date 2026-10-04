@@ -207,7 +207,7 @@ static class PlayniteIcon
                 {
                     RECT rc2; GetWindowRect(h, out rc2);
                     Rectangle pb = Screen.PrimaryScreen.Bounds;
-                    if ((double)(rc2.R - rc2.L) * (rc2.B - rc2.T) >= 0.5 * pb.Width * pb.Height && fsWins.Add(h))
+                    if (!StillExiting() && (double)(rc2.R - rc2.L) * (rc2.B - rc2.T) >= 0.5 * pb.Width * pb.Height && fsWins.Add(h))
                     {
                         fsSeen = true;
                         Log("tracking Fullscreen window " + h + " (" + fsWins.Count + " tracked)");
@@ -315,7 +315,12 @@ static class PlayniteIcon
         if (armed == null) { armed = new ExitCoverForm(); armed.Show(); }
         SetLayeredWindowAttributes(armed.Handle, 0, 255, 2);
         SetWindowPos(armed.Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_FLAGS);
-        if (!flipped) { flipped = true; flippedAt = DateTime.Now; Log("exit cover BLACK now: " + why); }
+        if (!flipped)
+        {
+            flipped = true; flippedAt = DateTime.Now;
+            exitingPids = PlaynitePids(); exitingCheckedAt = DateTime.MinValue;       // from now on these processes are exiting
+            Log("exit cover BLACK now: " + why + " (exiting processes: " + exitingPids.Count + ")");
+        }
     }
 
     // No Fullscreen window is showing any more. That is an EXIT unless a game is running: while a game runs, the
@@ -323,6 +328,34 @@ static class PlayniteIcon
     // (Playnite hides/minimizes its windows before it starts its own exit screen, so "minimized" counts as gone.)
     static bool falseAlarmLatched;   // a false alarm was corrected: stay quiet until a Fullscreen window is showing again
     static bool fsSeen;              // a Fullscreen window has been tracked (stays true after the windows are destroyed)
+
+    // The Playnite process(es) that are EXITING: from the moment an exit starts until they are really gone nothing may be
+    // re-tracked or re-armed. (Otherwise the dying process's last window - its own exit screen - got re-armed after the
+    // cover was released, and a ghost cover flipped black again once the real one finished.)
+    static HashSet<int> exitingPids = new HashSet<int>();
+    static DateTime exitingCheckedAt = DateTime.MinValue;
+    static bool exitingCache;
+
+    static HashSet<int> PlaynitePids()
+    {
+        HashSet<int> s = new HashSet<int>();
+        foreach (string name in new string[] { "Playnite.FullscreenApp", "Playnite.DesktopApp" })
+            foreach (Process p in Process.GetProcessesByName(name)) s.Add(p.Id);
+        return s;
+    }
+
+    static bool StillExiting()
+    {
+        if (exitingPids.Count == 0) return false;
+        if ((DateTime.Now - exitingCheckedAt).TotalMilliseconds < 250) return exitingCache;     // cheap: asked per window
+        exitingCheckedAt = DateTime.Now;
+        exitingPids.RemoveWhere(delegate(int pid)
+        {
+            try { Process p = Process.GetProcessById(pid); return p.HasExited; } catch { return true; }
+        });
+        exitingCache = exitingPids.Count > 0;
+        return exitingCache;
+    }
 
     static void ResetTracking()
     {
@@ -332,6 +365,8 @@ static class PlayniteIcon
     static void CheckExitNow(string why)
     {
         if (!exitCover || flipped || falseAlarmLatched || !fsSeen) return;
+        if (StillExiting()) return;                       // an exit is already being handled
+        if (CountPlaynite() == 0) return;                 // Playnite is not running: nothing to cover (this was the ghost cover)
         if (AnyFsShowing()) return;
         if (Process.GetProcessesByName("PlayniteCover").Length > 0) return;
         FlipExitCover(why);
@@ -377,13 +412,14 @@ static class PlayniteIcon
             // false alarm: the window is back, or nothing followed within a few seconds while Playnite keeps running
             if (helpers == 0 && pl > 0 && (mainShowing || sec >= (helperStarted ? 6 : 1.5)))
             {
-                flipped = false; falseAlarmLatched = true;
+                flipped = false; falseAlarmLatched = true; exitingPids.Clear();      // it was not an exit after all
                 if (armed != null) SetLayeredWindowAttributes(armed.Handle, 0, 0, 2);   // invisible again
                 Log("exit cover: false alarm (Playnite is still running) -> invisible again");
             }
             return;
         }
 
+        if (StillExiting()) return;       // the Playnite that is exiting must not be re-tracked or re-armed
         if (mainShowing) { falseAlarmLatched = false; EnsureArmed(); SetWindowPos(armed.Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_FLAGS); }
         else
         {
