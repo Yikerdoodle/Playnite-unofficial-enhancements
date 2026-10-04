@@ -102,9 +102,11 @@ is on screen, so mode switches are smooth too. To leave no gap between clicking 
 that screen appearing (the Fullscreen window disappears first), the window watcher keeps an **invisible**,
 click-through cover over the screen while Playnite's Fullscreen window is showing and turns it black the
 instant the LAST Fullscreen window is hidden or destroyed (Fullscreen creates more than one big window while it
-starts, so all of them are tracked; minimizing, e.g. behind a game, never triggers it, and the layer is removed
-while no Fullscreen window is showing). If nothing follows within a few seconds while Playnite keeps running, it
-turns invisible again, so it can never leave the screen black. It also reacts to a window titled "Exiting
+starts, so all of them are tracked). Playnite hides or minimizes its windows before it shows its own exit screen,
+so "hidden, minimized or destroyed" all count as the start of an exit - unless a game session is running (the
+launch helper is alive for the whole session, and Playnite is minimized on purpose then). If nothing follows within
+a moment while Playnite keeps running (for example you minimized it by hand), it turns invisible again and stays
+quiet until a Fullscreen window is showing, so it can never leave the screen black. It also reacts to a window titled "Exiting
 Playnite..." (English Playnite) and hands over to a long-lived helper (`PlayniteCover.exe exit`), and the
 extension's `OnApplicationStopped` starts the same helper as a backup; only one helper runs. It has a 40-second fail-safe and does nothing
 in Desktop mode. Opt out with `{ "CoverExit": false }` in `settings.json`.

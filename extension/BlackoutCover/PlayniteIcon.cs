@@ -96,6 +96,7 @@ static class PlayniteIcon
     const int ICON_SMALL = 0, ICON_BIG = 1;
     const uint SMTO_ABORTIFHUNG = 0x0002;
     const uint IMAGE_ICON = 1, LR_LOADFROMFILE = 0x0010;
+    const uint EVENT_SYSTEM_MINIMIZESTART = 0x0016;
     const uint EVENT_OBJECT_CREATE = 0x8000, EVENT_OBJECT_DESTROY = 0x8001, EVENT_OBJECT_SHOW = 0x8002, EVENT_OBJECT_HIDE = 0x8003, EVENT_OBJECT_NAMECHANGE = 0x800C;
     static readonly IntPtr HWND_TOPMOST = (IntPtr)(-1);
     const uint SWP_FLAGS = 0x0001 | 0x0002 | 0x0010;   // NOSIZE | NOMOVE | NOACTIVATE
@@ -269,6 +270,19 @@ static class PlayniteIcon
         if (!flipped) { flipped = true; flippedAt = DateTime.Now; Log("exit cover BLACK now: " + why); }
     }
 
+    // No Fullscreen window is showing any more. That is an EXIT unless a game is running: while a game runs, the
+    // launch helper (also PlayniteCover.exe) is alive for the whole session and Playnite is minimized on purpose.
+    // (Playnite hides/minimizes its windows before it starts its own exit screen, so "minimized" counts as gone.)
+    static bool falseAlarmLatched;   // a false alarm was corrected: stay quiet until a Fullscreen window is showing again
+
+    static void CheckExitNow(string why)
+    {
+        if (!exitCover || flipped || falseAlarmLatched || fsWins.Count == 0) return;
+        if (AnyFsShowing()) return;
+        if (Process.GetProcessesByName("PlayniteCover").Length > 0) return;
+        FlipExitCover(why);
+    }
+
     // The long-lived exit helper (PlayniteCover.exe exit): holds the cover until Playnite has really gone.
     static void StartExitHelper()
     {
@@ -300,21 +314,25 @@ static class PlayniteIcon
             int pl = CountPlaynite();
             if (pl == 0) { if (noPlayniteSince == DateTime.MinValue) noPlayniteSince = now; } else noPlayniteSince = DateTime.MinValue;
 
-            if (helperStarted && helpers > 0 && sec >= 1.2) { CloseArmed(); fsWins.Clear(); Log("exit cover: the helper's cover has taken over -> this layer released"); return; }
+            if (helpers > 0 && sec >= 1.2) { CloseArmed(); fsWins.Clear(); Log("exit cover: the helper's cover has taken over -> this layer released"); return; }
             if (pl == 0 && (now - noPlayniteSince).TotalSeconds >= 2.0 && helpers == 0) { CloseArmed(); fsWins.Clear(); Log("exit cover: Playnite gone -> released"); return; }
             if (sec >= 45) { CloseArmed(); fsWins.Clear(); Log("exit cover: fail-safe (45 s) -> released"); return; }
             // false alarm: the window is back, or nothing followed within a few seconds while Playnite keeps running
-            if (!helperStarted && pl > 0 && (mainShowing || sec >= 6))
+            if (helpers == 0 && pl > 0 && (mainShowing || sec >= (helperStarted ? 6 : 1.5)))
             {
-                flipped = false;
+                flipped = false; falseAlarmLatched = true;
                 if (armed != null) SetLayeredWindowAttributes(armed.Handle, 0, 0, 2);   // invisible again
                 Log("exit cover: false alarm (Playnite is still running) -> invisible again");
             }
             return;
         }
 
-        if (mainShowing) { EnsureArmed(); SetWindowPos(armed.Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_FLAGS); }
-        else if (armed != null) { CloseArmed(); Log("exit cover disarmed (Fullscreen window not showing)"); }
+        if (mainShowing) { falseAlarmLatched = false; EnsureArmed(); SetWindowPos(armed.Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_FLAGS); }
+        else
+        {
+            CheckExitNow("no Fullscreen window is showing and no game is running");   // fallback if no event was seen
+            if (!flipped && armed != null) { CloseArmed(); Log("exit cover disarmed (Fullscreen window not showing, a game is running or none was tracked)"); }
+        }
     }
 
     static void OnWinEvent(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
@@ -322,14 +340,16 @@ static class PlayniteIcon
         try
         {
             // The earliest signal of an exit: Playnite's Fullscreen main window is hidden or destroyed.
-            if (exitCover && idObject == 0 && idChild == 0 && (ev == EVENT_OBJECT_DESTROY || ev == EVENT_OBJECT_HIDE) && fsWins.Contains(hwnd))
+            bool goneEvent = ev == EVENT_OBJECT_DESTROY || ev == EVENT_OBJECT_HIDE || ev == EVENT_SYSTEM_MINIMIZESTART;
+            if (exitCover && idObject == 0 && idChild == 0 && goneEvent && fsWins.Contains(hwnd))
             {
-                if (ev == EVENT_OBJECT_HIDE && IsIconic(hwnd)) return;          // minimized (e.g. behind a game), not closed
-                if (!AnyFsShowing())                                             // that was the last Fullscreen window
-                    FlipExitCover("last Fullscreen window " + (ev == EVENT_OBJECT_DESTROY ? "destroyed" : "hidden"));
+                Log("event " + (ev == EVENT_OBJECT_DESTROY ? "DESTROY" : ev == EVENT_OBJECT_HIDE ? "HIDE" : "MINIMIZESTART") + " on Fullscreen window " + hwnd);
+                burstUntil = DateTime.Now.AddSeconds(2);                          // a minimize only completes a moment later: re-check fast
+                if (timer.Interval != 25) timer.Interval = 25;
+                CheckExitNow("Fullscreen window " + (ev == EVENT_OBJECT_DESTROY ? "destroyed" : ev == EVENT_OBJECT_HIDE ? "hidden" : "minimizing"));
                 return;
             }
-            if (ev == EVENT_OBJECT_DESTROY || ev == EVENT_OBJECT_HIDE) return;
+            if (goneEvent) return;
             if (idObject != 0 || idChild != 0 || hwnd == IntPtr.Zero) return;   // OBJID_WINDOW only
             if (GetParent(hwnd) != IntPtr.Zero) return;                          // top-level windows only
             uint pid; GetWindowThreadProcessId(hwnd, out pid);
@@ -424,8 +444,11 @@ static class PlayniteIcon
         IntPtr hook = SetWinEventHook(EVENT_OBJECT_CREATE, EVENT_OBJECT_HIDE, IntPtr.Zero, hookProc, 0, 0, WINEVENT_OUTOFCONTEXT);   // create, destroy, show, hide
         IntPtr hook2 = (haveTitle || exitCover) ? SetWinEventHook(EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_NAMECHANGE, IntPtr.Zero, hookProc, 0, 0, WINEVENT_OUTOFCONTEXT) : IntPtr.Zero;
         Log(hook == IntPtr.Zero ? "WARNING: could not install the window event hook (polling only)" : "window event hooks installed");
+        // a window being minimized is a system event of its own (minimize start)
+        IntPtr hook3 = exitCover ? SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZESTART, IntPtr.Zero, hookProc, 0, 0, WINEVENT_OUTOFCONTEXT) : IntPtr.Zero;
         ApplyToAll();
         Application.Run();
+        if (hook3 != IntPtr.Zero) UnhookWinEvent(hook3);
         if (hook != IntPtr.Zero) UnhookWinEvent(hook);
         if (hook2 != IntPtr.Zero) UnhookWinEvent(hook2);
         GC.KeepAlive(mutex);
